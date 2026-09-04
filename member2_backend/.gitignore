@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Runtime data (regenerated automatically — never commit real enrollment data)
+data/voice_integrity.db
+data/audio_uploads/*
+!data/audio_uploads/.gitkeep
+
+# Streamlit
+.streamlit/
+
+# OS/editor cruft
+.DS_Store
+*.swp
+.vscode/
+.idea/

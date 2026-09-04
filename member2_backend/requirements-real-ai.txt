@@ -1,0 +1,27 @@
+# Only needed when running with VISL_AI_BACKEND=real (see app/config.py).
+# Copied from Member 1's voice-cloning-and-impersonation-detection repo
+# requirements.txt. No overlap with the base requirements.txt package names,
+# so both can be installed into the same environment safely.
+#
+# NOTE: if you already installed Member 1's repo requirements.txt directly,
+# you likely have all of this already — this file exists so a fresh clone
+# of member2_backend can install exactly what AI_BACKEND=real needs without
+# also pulling in Member 1's full training/eval scripts and their deps.
+
+torch==2.5.1
+torchaudio==2.5.1
+librosa==0.10.2
+soundfile==0.14.0
+speechbrain==1.0.3
+scikit-learn==1.9.0
+huggingface_hub==0.26.5
+numpy==2.4.6
+scipy==1.17.1
+HyperPyYAML==1.2.3
+sentencepiece==0.2.2
+
+# Transcription (Tasks 3/4/5 dashboard refactor: auto-detect amount/urgency/
+# known-contact from speech instead of manual entry). CTranslate2-based, not
+# full PyTorch, so this stays lightweight relative to the AASIST/ECAPA stack
+# above -- see app/services/transcription_service.py.
+faster-whisper==1.2.1
