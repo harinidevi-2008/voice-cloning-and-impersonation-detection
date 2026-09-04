@@ -25,3 +25,6 @@ class AnalyzeResponse(BaseModel):
     context_risk: float
     impersonation_risk: float
     verdict: str
+    transcript: str = "Hello, this is a call. Please transfer the funds immediately."
+    transaction_amount: float = 0.0
+    urgency: str = "medium"

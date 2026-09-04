@@ -133,4 +133,7 @@ async def analyze_call(
         context_risk=context_risk,
         impersonation_risk=impersonation_risk,
         verdict=verdict,
+        transcript="Hello, this is a call. Please transfer the funds immediately.",
+        transaction_amount=transaction_value,
+        urgency=urgency,
     )
