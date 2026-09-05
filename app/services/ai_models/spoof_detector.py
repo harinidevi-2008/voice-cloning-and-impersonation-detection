@@ -27,7 +27,10 @@ import torch
 import numpy as np
 
 from app.services.ai_models.preprocess import preprocess
-from app.services.ai_models.aasist_scoring import spoof_probability_from_logits
+from app.services.ai_models.aasist_scoring import (
+    spoof_label_from_score,
+    spoof_probability_from_logits,
+)
 
 # ------------------------------------------------------------------
 # Add the cloned AASIST repository to Python path
@@ -93,6 +96,14 @@ class SpoofDetector:
 
         return spoof_probability_from_logits(logit_spoof, logit_bonafide)
 
+    def predict_assessment(self, audio_path: str) -> dict:
+        """Return model evidence together with its calibrated confidence band."""
+        spoof_score = self.predict(audio_path)
+        return {
+            "spoof_score": spoof_score,
+            "spoof_label": spoof_label_from_score(spoof_score),
+        }
+
 
 # Lazily-initialized singleton: building the model + loading weights takes a
 # noticeable moment, so we only pay that cost once, on first real use, not
@@ -116,3 +127,8 @@ def get_spoof_score(audio_path: str) -> float:
         the evidence behind it.
     """
     return _get_detector().predict(audio_path)
+
+
+def get_spoof_assessment(audio_path: str) -> dict:
+    """Return ``spoof_score`` and the calibrated ``spoof_label``."""
+    return _get_detector().predict_assessment(audio_path)

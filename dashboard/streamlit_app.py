@@ -25,6 +25,7 @@ Run with:
 
 import os
 import time
+import html
 import requests
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
@@ -37,18 +38,21 @@ REQUEST_TIMEOUT_SECS = 30  # transcription can take a few seconds longer than a 
 ALLOWED_AUDIO_TYPES = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "mp4"]
 
 # ---------------------------------------------------------------------------
-# Theme (Task 7) — professional cybersecurity palette
+# Fixed enterprise light theme. Metric evidence colors remain intentionally
+# semantic; the surrounding interface is strictly monochrome.
 # ---------------------------------------------------------------------------
 THEME = {
-    "background": "#07111F",
-    "surface": "#0F1B2D",
-    "primary": "#2563EB",
-    "success": "#16A34A",
-    "warning": "#F59E0B",
+    "background": "#F5F6F8",
+    "surface": "#FFFFFF",
+    "card": "#FFFFFF",
+    "primary": "#111111",
+    "success": "#059669",
+    "warning": "#D97706",
     "danger": "#DC2626",
-    "text": "#F8FAFC",
-    "text_muted": "#94A3B8",
-    "border": "#1E293B",
+    "text": "#111111",
+    "text_muted": "#6B7280",
+    "border": "#E5E7EB",
+    "shadow": "rgba(17,17,17,0.08)",
 }
 
 # Dashboard-level display tiers, derived from impersonation_risk.
@@ -65,14 +69,6 @@ RISK_TIERS = [
     (0.00, "LOW", THEME["success"], "rgba(22, 163, 74, 0.15)"),
 ]
 
-RECOMMENDED_ACTIONS = {
-    "LOW": "Continue -- normal verification only.",
-    "MEDIUM": "Additional verification recommended before proceeding (e.g. confirm one extra detail with the caller).",
-    "HIGH": "Require secondary verification (callback on a known number, OTP, or supervisor approval) before proceeding.",
-    "CRITICAL": "Block / escalate the transaction immediately. Do not proceed without a full security review.",
-}
-
-
 def get_risk_tier(score: float):
     """Returns (tier_name, color_hex, translucent_bg) for a risk score in [0, 1]."""
     for threshold, name, color, bg in RISK_TIERS:
@@ -88,29 +84,36 @@ def api_base_url() -> str:
     return st.session_state.get("api_base_url", DEFAULT_API_BASE_URL)
 
 
+def request_dashboard_refresh() -> None:
+    """Explicit refresh callback used by the three dashboard data views."""
+    st.session_state["_dashboard_refresh_at"] = time.time()
+
+
 def check_backend_health():
     """
-    Returns (is_healthy, message, ai_backend_or_None). ai_backend reflects
+    Returns (is_healthy, latency_ms_or_None, message, ai_backend_or_None). ai_backend reflects
     the backend's ACTUAL VISL_AI_BACKEND setting (via the root endpoint's
     "ai_backend" field) -- never hardcoded here, so the sidebar can't claim
     REAL when the backend is actually running MOCK or vice versa.
     """
+    started_at = time.perf_counter()
     try:
         resp = requests.get(api_base_url() + "/", timeout=5)
+        latency_ms = (time.perf_counter() - started_at) * 1000
         if resp.status_code == 200:
             ai_backend = None
             try:
                 ai_backend = resp.json().get("ai_backend")
             except ValueError:
                 pass
-            return True, "Connected", ai_backend
-        return False, f"Backend responded with HTTP {resp.status_code}", None
+            return True, latency_ms, "Connected", ai_backend
+        return False, latency_ms, f"Backend responded with HTTP {resp.status_code}", None
     except requests.exceptions.ConnectionError:
-        return False, "Cannot reach backend (is uvicorn running?)", None
+        return False, None, "Cannot reach backend (is uvicorn running?)", None
     except requests.exceptions.Timeout:
-        return False, "Backend connection timed out", None
+        return False, None, "Backend connection timed out", None
     except Exception as exc:  # noqa: BLE001
-        return False, f"Unexpected error: {exc}", None
+        return False, None, f"Unexpected error: {exc}", None
 
 
 def fetch_users():
@@ -124,6 +127,19 @@ def fetch_users():
         return None, "Cannot reach backend (is uvicorn running?)"
     except Exception as exc:  # noqa: BLE001
         return None, f"Unexpected error fetching users: {exc}"
+
+
+def fetch_enrolled_speakers():
+    """Fetch only profiles that the backend has verified have a voiceprint."""
+    try:
+        resp = requests.get(f"{api_base_url()}/enroll/speakers", timeout=REQUEST_TIMEOUT_SECS)
+        if resp.status_code == 200:
+            return resp.json(), None
+        return None, f"GET /enroll/speakers failed: HTTP {resp.status_code} -- {resp.text}"
+    except requests.exceptions.ConnectionError:
+        return None, "Cannot reach backend (is uvicorn running?)"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Unexpected error fetching enrolled speakers: {exc}"
 
 
 def fetch_recent_analyses(limit: int = 10):
@@ -171,6 +187,7 @@ def analyze_call(audio_bytes: bytes, filename: str, content_type: str, claimed_u
     """
     try:
         files = {"audio_file": (filename, audio_bytes, content_type)}
+        # Keep multipart field names aligned with FastAPI's established contract.
         data = {}
         if claimed_user_id is not None:
             data["claimed_user_id"] = str(claimed_user_id)
@@ -260,68 +277,125 @@ def audio_input_widget(key_prefix: str):
 # Rendering helpers
 # ---------------------------------------------------------------------------
 def inject_theme_css():
-    """Task 7: dark cybersecurity theme -- rounded cards, soft shadows, blue
-    active tabs, applied via CSS injection (Streamlit doesn't expose most
-    of this through its own theming API)."""
+    """Apply the fixed enterprise light interface."""
     t = THEME
     st.markdown(
         f"""
         <style>
         .stApp {{
-            background-color: {t['background']};
+            background: {t['background']};
             color: {t['text']};
         }}
         [data-testid="stSidebar"] {{
-            background-color: {t['surface']};
-            border-right: 1px solid {t['border']};
+            background: #111111;
+            border-right: 1px solid #111111;
         }}
         h1, h2, h3, h4, p, span, label, .stMarkdown {{
             color: {t['text']};
+        }}
+        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span, [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] .stMarkdown {{ color: #FFFFFF !important; }}
+        [data-testid="stSidebar"] .stCaption,
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {{ color: #D1D5DB !important; }}
+        [data-testid="stSidebar"] .visl-card {{
+            background: #1B1B1B;
+            border-color: #3F3F46;
+            box-shadow: none;
         }}
         .stCaption, [data-testid="stCaptionContainer"] {{
             color: {t['text_muted']} !important;
         }}
         div[data-testid="stForm"], .visl-card {{
-            background-color: {t['surface']};
+            background: {t['card']};
             border: 1px solid {t['border']};
-            border-radius: 14px;
+            border-radius: 18px;
             padding: 20px;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+            box-shadow: 0 10px 28px {t['shadow']};
         }}
         .stTabs [data-baseweb="tab-list"] {{
             gap: 4px;
         }}
+        .stTabs [data-baseweb="tab"] {{ color: {t['text_muted']} !important; }}
         .stTabs [aria-selected="true"] {{
-            background-color: {t['primary']} !important;
-            color: {t['text']} !important;
-            border-radius: 8px 8px 0 0;
+            background-color: transparent !important;
+            color: #111111 !important;
+            border-bottom: 3px solid #111111 !important;
         }}
         .stButton button, .stFormSubmitButton button {{
-            background-color: {t['primary']};
-            color: {t['text']};
-            border-radius: 8px;
-            border: none;
+            background-color: #FFFFFF !important;
+            color: #111111 !important;
+            border-radius: 10px;
+            border: 1px solid #111111 !important;
         }}
         .stButton button:hover, .stFormSubmitButton button:hover {{
-            background-color: #1D4ED8;
+            background-color: #F3F4F6 !important;
+            color: #111111 !important;
+            border-color: #111111 !important;
+        }}
+        [data-testid="stFileUploaderDropzone"] {{
+            background: #FFFFFF !important;
+            border: 1px solid #111111 !important;
+            color: #111111 !important;
+            border-radius: 10px !important;
+        }}
+        [data-testid="stFileUploaderDropzoneInstructions"],
+        [data-testid="stFileUploaderDropzoneInstructions"] * {{
+            color: #111111 !important;
+        }}
+        [data-testid="stFileUploader"] button {{
+            background: #FFFFFF !important;
+            color: #111111 !important;
+            border: 1px solid #111111 !important;
+            border-radius: 10px !important;
+        }}
+        [data-testid="stFileUploader"] button:hover {{
+            background: #F3F4F6 !important;
+            color: #111111 !important;
+        }}
+        [data-testid="stFileUploader"] ::selection {{
+            color: #111111 !important;
+            background: #E5E7EB !important;
+        }}
+        [data-testid="stFileUploader"] ::-moz-selection {{
+            color: #111111 !important;
+            background: #E5E7EB !important;
         }}
         input, textarea, .stSelectbox div[data-baseweb="select"] {{
-            background-color: {t['background']} !important;
+            background-color: {t['surface']} !important;
             color: {t['text']} !important;
-            border-radius: 8px !important;
+            border: 1px solid {t['border']} !important;
+            border-radius: 10px !important;
+        }}
+        input:focus, textarea:focus {{ border-color: #111111 !important; }}
+        input::placeholder, textarea::placeholder {{
+            color: #111111 !important;
+            opacity: 1 !important;
         }}
         [data-testid="stDataFrame"] {{
+            background: #FFFFFF;
+            border: 1px solid {t['border']};
+            box-shadow: 0 8px 24px {t['shadow']};
             border-radius: 10px;
             overflow: hidden;
+        }}
+        [data-testid="stDataFrame"] [role="row"]:nth-child(even) {{ background: #F9FAFB; }}
+        [data-testid="stExpander"] {{
+            background: #FFFFFF;
+            border: 1px solid {t['border']};
+            border-radius: 16px;
+            box-shadow: 0 8px 24px {t['shadow']};
+            margin-bottom: 12px;
         }}
         /* Metric cards (Task 8) -- Streamlit's built-in st.metric doesn't
         pick up the card styling above by default */
         [data-testid="stMetric"] {{
-            background-color: {t['surface']};
+            background: linear-gradient(135deg, {t['card']}, {t['surface']});
             border: 1px solid {t['border']};
-            border-radius: 12px;
+            border-radius: 18px;
             padding: 14px 16px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+            box-shadow: 0 10px 28px {t['shadow']};
         }}
         [data-testid="stMetricValue"] {{
             color: {t['text']};
@@ -364,8 +438,8 @@ def render_meter(label: str, value_0_1: float, color: str, caption: str = ""):
     )
 
 
-def render_metric_card(title: str, value_display: str, color: str, subtitle: str = "", pct=None):
-    """Task 9: risk dashboard metric card (AI Spoof / Speaker Match / Fraud Risk)."""
+def render_metric_card(title: str, value_display: str, color: str, subtitle: str = "", pct=None, icon: str = "●"):
+    """Professional KPI card with a colored, animated evidence bar."""
     t = THEME
     bar_html = ""
     if pct is not None:
@@ -376,9 +450,9 @@ def render_metric_card(title: str, value_display: str, color: str, subtitle: str
         """
     st.markdown(
         f"""
-        <div class="visl-card" style="text-align:center; padding:18px;">
+        <div class="visl-card" style="padding:20px;">
             <div style="font-size:0.82rem; color:{t['text_muted']}; text-transform:uppercase; letter-spacing:0.05em; font-weight:600;">
-                {title}
+                <span style="font-size:1.1rem;">{icon}</span> &nbsp;{title}
             </div>
             <div style="font-size:2rem; font-weight:800; color:{color}; margin-top:6px;">
                 {value_display}
@@ -389,6 +463,18 @@ def render_metric_card(title: str, value_display: str, color: str, subtitle: str
         """,
         unsafe_allow_html=True,
     )
+
+
+def spoof_display(score: float, label: str | None = None):
+    """Return the calibrated label and color used consistently by result cards."""
+    score = max(0.0, min(1.0, float(score)))
+    if score <= 0.25:
+        return label or "Genuine (Very High Confidence)", THEME["success"]
+    if score <= 0.45:
+        return label or "Probably Genuine", "#EAB308"  # yellow
+    if score <= 0.65:
+        return label or "Suspicious", "#F97316"  # orange
+    return label or ("Likely AI Generated" if score <= 0.85 else "Highly Likely AI Generated"), THEME["danger"]
 
 
 def render_verdict_banner(tier_name: str, color: str, bg: str, backend_verdict: str, risk_score: float):
@@ -422,9 +508,59 @@ def render_verdict_banner(tier_name: str, color: str, bg: str, backend_verdict: 
     )
 
 
-def render_recommended_action(tier_name: str, color: str, bg: str):
+def generate_preventive_actions(result: dict) -> list[str]:
+    """Return concise, deduplicated safeguards for the current analysis."""
+    actions_by_risk = {
+        "LOW": [
+            "Proceed with the transaction.",
+            "Log the interaction.",
+            "No further verification required.",
+        ],
+        "MEDIUM": [
+            "Verify one personal identity detail.",
+            "Confirm payment using the registered number.",
+            "Do not share OTP or PIN.",
+            "Record the interaction.",
+        ],
+        "HIGH": [
+            "Pause the transaction immediately.",
+            "Verify identity via another channel.",
+            "Contact the organization directly.",
+            "Escalate to fraud monitoring.",
+        ],
+        "CRITICAL": [
+            "Block the transaction.",
+            "Disconnect the call.",
+            "Freeze payment authorization.",
+            "Preserve recording as evidence.",
+            "Notify cybersecurity response.",
+        ],
+    }
+    final_risk = (result.get("verdict") or result.get("final_risk") or "LOW").upper()
+    actions = list(actions_by_risk.get(final_risk, actions_by_risk["MEDIUM"]))
+
+    # Use the evidence itself, not a static risk label, for additions.
+    amount = result.get("detected_amount") or result.get("amount") or 0
+    urgency = (result.get("detected_urgency") or result.get("urgency") or "low").upper()
+    spoof_score = result.get("spoof_score") or 0
+    additions = []
+    if amount > 100_000:
+        additions.append("Require dual approval before payment.")
+    if urgency == "HIGH":
+        additions.append("Ignore pressure tactics requesting immediate action.")
+    if spoof_score > 0.70:
+        additions.append("Treat the voice as potentially AI-generated.")
+    for action in additions:
+        if action not in actions and len(actions) >= 5:
+            actions.pop()
+        if action not in actions:
+            actions.append(action)
+    return actions[:5]
+
+
+def render_recommended_action(result: dict, tier_name: str, color: str, bg: str):
     t = THEME
-    action_text = RECOMMENDED_ACTIONS.get(tier_name, "Review manually.")
+    actions_html = "".join(f"<li>{action}</li>" for action in generate_preventive_actions(result))
     st.markdown(
         f"""
         <div style="
@@ -437,9 +573,9 @@ def render_recommended_action(tier_name: str, color: str, bg: str):
             <div style="font-size:0.85rem; color:{t['text_muted']}; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;">
                 Recommended Action
             </div>
-            <div style="font-size:1.05rem; color:{t['text']}; margin-top:4px;">
-                {action_text}
-            </div>
+            <ul style="font-size:1rem; color:{t['text']}; margin:8px 0 0 0; padding-left:20px; line-height:1.7;">
+                {actions_html}
+            </ul>
         </div>
         """,
         unsafe_allow_html=True,
@@ -462,6 +598,28 @@ def render_urgency_badge(urgency: str):
     )
 
 
+@st.fragment(run_every=4)
+def render_backend_monitor():
+    """Poll the live backend on an independent four-second refresh cycle."""
+    healthy, latency_ms, health_msg, ai_backend = check_backend_health()
+    if healthy:
+        st.markdown(
+            f"<div class='visl-card' style='padding:14px; margin:8px 0;'>"
+            f"<span style='color:{THEME['text_muted']}'>Backend Status</span><br>"
+            f"<b style='color:{THEME['success']}'>● Online</b><br>"
+            f"<span style='color:{THEME['text_muted']}'>Latency</span> "
+            f"<b>{latency_ms:.0f} ms</b> &nbsp; "
+            f"<span style='color:{THEME['text_muted']}'>AI Backend</span> "
+            f"<b>{(ai_backend or 'unknown').upper()}</b></div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.error("🔴 Backend Offline")
+        st.caption(health_msg)
+        if st.button("Retry", key="backend_health_retry", use_container_width=True):
+            st.rerun(scope="fragment")
+
+
 # ---------------------------------------------------------------------------
 # Page setup
 # ---------------------------------------------------------------------------
@@ -471,38 +629,23 @@ st.set_page_config(
     layout="wide",
 )
 
-inject_theme_css()
-
 if "api_base_url" not in st.session_state:
     st.session_state["api_base_url"] = DEFAULT_API_BASE_URL
+inject_theme_css()
 
 with st.sidebar:
-    st.markdown("### Voice Integrity Security Layer")
-    st.caption("Real-time voice fraud detection")
+    st.markdown("## Voice Integrity")
+    st.caption("Real-time Voice Fraud Detection")
+    st.markdown("---")
     st.text_input("Backend API URL", key="api_base_url")
-
-    healthy, health_msg, ai_backend = check_backend_health()
-    if healthy:
-        st.success(f"Backend: {health_msg}")
-    else:
-        st.error(f"Backend: {health_msg}")
-        st.caption("Start it with: `uvicorn app.main:app --reload --port 8000`")
-
-    st.divider()
-    if ai_backend == "real":
-        st.success("AI Backend: **REAL** (XLS-R+AASIST, ECAPA-TDNN)")
-    elif ai_backend == "mock":
-        st.warning(
-            "AI Backend: **MOCK** -- deterministic hash-based stand-ins, "
-            "not real spoof/speaker models. See `app/services/mock_ai_service.py`."
-        )
-    else:
-        st.caption("AI Backend: unknown (backend unreachable or not reporting status)")
+    render_backend_monitor()
 
 st.title("Voice Integrity Security Layer")
 st.caption("Detects possible AI voice impersonation during high-risk calls or transactions.")
 
-tab_enroll, tab_analyze = st.tabs(["Speaker Enrollment", "Call Simulation & Analysis"])
+tab_enroll, tab_analyze, tab_recent = st.tabs(
+    ["Speaker Enrollment", "Call Simulation & Analysis", "Recent Analyses"]
+)
 
 # ---------------------------------------------------------------------------
 # SCREEN 1 -- Speaker Enrollment
@@ -540,15 +683,17 @@ with tab_enroll:
                     st.error(f"Enrollment failed: {error}")
                 else:
                     st.success(
-                        f"Speaker enrolled successfully! Assigned User ID: {result['user_id']}"
+                        f"Speaker enrolled successfully! Assigned User ID: {result.get('user_id', 'assigned')}"
+                    )
+                    st.success("✓ Voice embedding stored successfully")
+                    st.caption(
+                        f"Embedding dimension: {result.get('embedding_dimension', 192)}  ·  "
+                        f"Status: {result.get('verification_status', 'Ready for verification')}"
                     )
                     st.balloons()
 
     with right:
         st.markdown("**Currently Enrolled Speakers**")
-        if st.button("Refresh list", key="refresh_users_enroll_tab"):
-            st.rerun()
-
         users, error = fetch_users()
         if error:
             st.warning(error)
@@ -577,17 +722,24 @@ with tab_analyze:
         "automatically from the call audio -- nothing to type."
     )
 
-    users, users_error = fetch_users()
-    if users_error:
-        st.warning(users_error)
-        users = []
+    speakers, speakers_error = fetch_enrolled_speakers()
+    if speakers_error:
+        st.warning(speakers_error)
+        speakers = []
 
     UNKNOWN_OPTION = "Unknown / No Claimed Identity"
     user_options = [UNKNOWN_OPTION] + [
-        f"{u['user_id']} -- {u['name']} ({u['role']})" for u in (users or [])
+        f"{speaker['id']} -- {speaker['name']} ({speaker['role']})" for speaker in (speakers or [])
     ]
 
-    claimed_choice = st.selectbox("Claimed Caller Identity", user_options, key="analyze_claimed")
+    if not speakers:
+        st.info("No enrolled speakers available. Enroll a speaker first.")
+    claimed_choice = st.selectbox(
+        "Claimed Caller Identity",
+        user_options,
+        key="analyze_claimed",
+        disabled=not bool(speakers),
+    )
 
     st.markdown("**Call audio sample**")
     analyze_audio = audio_input_widget("analyze")
@@ -613,7 +765,8 @@ with tab_analyze:
                 )
 
             if error:
-                st.error(f"Analysis failed: {error}")
+                st.error("Analysis failed")
+                st.caption(f"Reason: {error}")
             else:
                 st.session_state["last_analysis_result"] = result
 
@@ -622,10 +775,10 @@ with tab_analyze:
     if result:
         st.divider()
 
-        spoof_score = result["spoof_score"]
-        speaker_similarity = result["speaker_similarity"]
-        impersonation_risk = result["impersonation_risk"]
-        backend_verdict = result["verdict"]
+        spoof_score = float(result.get("spoof_score") or 0.0)
+        speaker_similarity = result.get("speaker_similarity")
+        impersonation_risk = float(result.get("impersonation_risk") or 0.0)
+        backend_verdict = result.get("verdict") or "UNKNOWN"
         transcript = result.get("transcript")
         detected_amount = result.get("detected_amount")
         detected_urgency = result.get("detected_urgency") or "low"
@@ -633,7 +786,15 @@ with tab_analyze:
         urgency_keywords = result.get("urgency_keywords") or []
         known_contact = result.get("known_contact")
 
-        tier_name, tier_color, tier_bg = get_risk_tier(impersonation_risk)
+        # The backend's centralized risk engine is authoritative.  The
+        # dashboard only maps its category to presentation colors.
+        tier_name = backend_verdict
+        tier_color, tier_bg = {
+            "LOW": (THEME["success"], "rgba(22, 163, 74, 0.15)"),
+            "MEDIUM": (THEME["warning"], "rgba(245, 158, 11, 0.15)"),
+            "HIGH": ("#F97316", "rgba(249, 115, 22, 0.15)"),
+            "CRITICAL": (THEME["danger"], "rgba(220, 38, 38, 0.15)"),
+        }.get(tier_name, (THEME["text_muted"], "rgba(148, 163, 184, 0.15)"))
 
         render_verdict_banner(tier_name, tier_color, tier_bg, backend_verdict, impersonation_risk)
 
@@ -646,7 +807,7 @@ with tab_analyze:
         if transcript:
             st.markdown(f'*"{transcript}"*')
         else:
-            st.caption("No transcript available for this call.")
+            st.error("Transcription failed")
         render_card_close()
 
         st.markdown("")
@@ -665,12 +826,28 @@ with tab_analyze:
                 st.caption(f"Detected keywords: {', '.join(urgency_keywords)}")
         with d3:
             st.markdown("**Speaker Match**")
-            if known_contact:
-                st.markdown(f"<span style='color:{THEME['success']}; font-weight:700;'>Recognized Speaker</span>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<span style='color:{THEME['danger']}; font-weight:700;'>Unknown Speaker</span>", unsafe_allow_html=True)
+            speaker_status = result.get("speaker_status") or (
+                "Verified Identity" if known_contact else "Needs Verification"
+            )
+            status_color = {
+                "VERIFIED IDENTITY": THEME["success"],
+                "LIKELY MATCH": "#EAB308",
+                "NEEDS VERIFICATION": "#F97316",
+                "NO MATCH": THEME["danger"],
+            }.get(speaker_status.upper(), THEME["text_muted"])
+            st.markdown(
+                f"<span style='color:{status_color}; font-weight:700;'>{speaker_status.title()}</span>",
+                unsafe_allow_html=True,
+            )
+            if speaker_similarity is not None:
+                render_meter(
+                    "Confidence", speaker_similarity, status_color,
+                    "Moderate confidence — verify one additional identity factor."
+                    if 0.45 <= speaker_similarity < 0.65 else "",
+                )
         with d4:
-            st.metric("Spoof Score", f"{spoof_score:.0%}")
+            spoof_label, spoof_color = spoof_display(spoof_score, result.get("spoof_label"))
+            st.metric("AI Voice Authenticity", spoof_label)
         with d5:
             st.metric("Risk", tier_name)
 
@@ -678,16 +855,38 @@ with tab_analyze:
         st.markdown("### Risk Dashboard")
         c1, c2, c3 = st.columns(3)
         with c1:
-            spoof_tier_name, spoof_color, _ = get_risk_tier(spoof_score)
-            render_metric_card("AI Spoof Probability", f"{spoof_score:.0%}", spoof_color, pct=spoof_score * 100)
+            spoof_label, spoof_color = spoof_display(
+                spoof_score, result.get("spoof_label") or result.get("spoof_category")
+            )
+            render_metric_card(
+                "AI Voice Authenticity", spoof_label, spoof_color,
+                f"Calibrated spoof evidence: {spoof_score:.0%}", pct=spoof_score * 100, icon="🛡"
+            )
         with c2:
             if speaker_similarity is None:
-                render_metric_card("Speaker Match", "N/A", THEME["text_muted"], "No claimed identity")
+                render_metric_card("Speaker Match", "N/A", THEME["text_muted"], "No claimed identity", icon="👤")
             else:
-                _, match_color, _ = get_risk_tier(1 - speaker_similarity)
-                render_metric_card("Speaker Match", f"{speaker_similarity:.0%}", match_color, pct=speaker_similarity * 100)
+                speaker_status = result.get("speaker_status") or "Needs Verification"
+                match_color = {
+                    "VERIFIED IDENTITY": THEME["success"],
+                    "LIKELY MATCH": "#EAB308",
+                    "NEEDS VERIFICATION": "#F97316",
+                    "NO MATCH": THEME["danger"],
+                }.get(speaker_status.upper(), THEME["text_muted"])
+                interpretation = (
+                    "Moderate Confidence" if 0.45 <= speaker_similarity < 0.65
+                    else speaker_status.title()
+                )
+                render_metric_card(
+                    "Speaker Match", f"{speaker_similarity:.0%}", match_color,
+                    interpretation, pct=speaker_similarity * 100, icon="👤"
+                )
         with c3:
-            render_metric_card("Fraud Risk", tier_name, tier_color, f"{impersonation_risk:.0%} score")
+            render_metric_card(
+                "Fraud Risk", tier_name, tier_color,
+                "Requires Verification" if tier_name in {"MEDIUM", "HIGH"} else f"{impersonation_risk:.0%} score",
+                pct=impersonation_risk * 100, icon="⚠"
+            )
 
         with st.expander("Component score detail"):
             m1, m2 = st.columns(2)
@@ -711,7 +910,7 @@ with tab_analyze:
                         "Higher = more likely the claimed speaker.",
                     )
             with m2:
-                context_risk = result["context_risk"]
+                context_risk = float(result.get("context_risk") or 0.0)
                 ctx_tier_name, ctx_color, _ = get_risk_tier(context_risk)
                 render_meter(
                     "Context Risk", context_risk, ctx_color,
@@ -719,37 +918,77 @@ with tab_analyze:
                 )
                 render_meter(
                     "Overall Impersonation Risk", impersonation_risk, tier_color,
-                    "0.5 x Spoof Risk + 0.3 x Identity Mismatch Risk + 0.2 x Context Risk",
+                    "0.40 x Speaker Mismatch + 0.35 x AI Spoof + 0.15 x Amount + 0.10 x Urgency",
                 )
 
-        render_recommended_action(tier_name, tier_color, tier_bg)
+        render_recommended_action(result, tier_name, tier_color, tier_bg)
 
-        with st.expander("Raw API response (for debugging / demo transparency)"):
-            api_only = {k: v for k, v in result.items() if k != "_processing_time_ms"}
-            st.json(api_only)
 
-    # --- Task 6: Recent Analyses ---
-    st.divider()
-    st.markdown("### Recent Analyses")
-    recent, recent_error = fetch_recent_analyses(limit=10)
+# ---------------------------------------------------------------------------
+# SCREEN 3 -- Persistent analysis history
+# ---------------------------------------------------------------------------
+with tab_recent:
+    st.subheader("Recent Analyses")
+    st.caption("Saved automatically after each successful call analysis.")
+
+    filter_left, filter_middle, filter_right = st.columns([2, 1, 0.7])
+    with filter_left:
+        speaker_query = st.text_input(
+            "Search by speaker", placeholder="Type a speaker name", key="recent_speaker_search"
+        )
+    with filter_middle:
+        risk_filter = st.selectbox(
+            "Filter by risk", ["All", "LOW", "MEDIUM", "HIGH", "CRITICAL"], key="recent_risk_filter"
+        )
+    recent, recent_error = fetch_recent_analyses(limit=100)
     if recent_error:
         st.warning(recent_error)
-    elif not recent:
-        st.info("No calls analyzed yet.")
     else:
-        st.dataframe(
-            recent,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "call_id": None,  # hide the raw UUID, not useful to scan visually
-                "timestamp": "Time (UTC)",
-                "speaker_name": "Speaker",
-                "transcript": st.column_config.TextColumn("Transcript", width="large"),
-                "amount": st.column_config.NumberColumn("Amount", format="\u20b9%d"),
-                "urgency": "Urgency",
-                "spoof_score": st.column_config.NumberColumn("Spoof Score", format="%.0%%"),
-                "similarity": st.column_config.NumberColumn("Similarity", format="%.0%%"),
-                "risk": "Risk Verdict",
-            },
-        )
+        normalized_query = speaker_query.strip().casefold()
+        filtered_recent = [
+            entry for entry in (recent or [])
+            if (not normalized_query or normalized_query in (entry.get("speaker_name") or "").casefold())
+            and (risk_filter == "All" or (entry.get("risk") or "").upper() == risk_filter)
+        ]
+
+        if not recent:
+            st.info("No analyses available.")
+        elif not filtered_recent:
+            st.info("No saved analyses match the current filters.")
+        else:
+            st.caption(f"Showing {len(filtered_recent)} saved analysis record(s).")
+            for entry in filtered_recent:
+                risk = (entry.get("risk") or "UNKNOWN").upper()
+                speaker = entry.get("speaker_name") or "Unknown speaker"
+                amount = entry.get("amount")
+                amount_display = f"₹{amount:,.0f}" if amount is not None else "No amount detected"
+                label = f"{entry.get('timestamp', 'Unknown time')}  |  {speaker}  |  {risk}"
+                risk_color = {
+                    "LOW": THEME["success"], "MEDIUM": THEME["warning"],
+                    "HIGH": "#F97316", "CRITICAL": THEME["danger"],
+                }.get(risk, THEME["text_muted"])
+                with st.expander(label):
+                    summary_left, summary_mid, summary_right = st.columns(3)
+                    summary_left.metric("Amount", amount_display)
+                    summary_mid.metric("Spoof score", f"{(entry.get('spoof_score') or 0):.0%}")
+                    similarity = entry.get("similarity")
+                    summary_right.metric(
+                        "Speaker similarity", f"{similarity:.0%}" if similarity is not None else "N/A"
+                    )
+                    st.markdown(
+                        f"<span style='background:{risk_color}22; color:{risk_color}; "
+                        f"border-radius:999px; padding:4px 10px; font-weight:700;'>{risk}</span>"
+                        f" &nbsp; <b>Urgency:</b> {(entry.get('urgency') or 'unknown').upper()}",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("**Transcript**")
+                    st.markdown(
+                        "<div style='background:#F3F4F6; border-radius:10px; padding:12px; "
+                        "color:#111111;'>"
+                        f"{html.escape(entry.get('transcript') or 'Transcription failed')}"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("**Preventive actions**")
+                    for action in generate_preventive_actions(entry):
+                        st.markdown(f"- {action}")

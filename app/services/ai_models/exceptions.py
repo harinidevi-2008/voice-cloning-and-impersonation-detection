@@ -21,3 +21,9 @@ class AudioDecodeError(Exception):
     """
 
     pass
+
+
+class SpeakerEmbeddingMissingError(Exception):
+    """Raised when an enrolled profile has no usable ECAPA voice embedding."""
+
+    pass

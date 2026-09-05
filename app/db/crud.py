@@ -58,6 +58,18 @@ def delete_user(user_id: int) -> None:
         conn.close()
 
 
+def set_embedding_status(user_id: int, status: str) -> None:
+    """Record whether this profile is safe to offer for verification."""
+    if status not in {"ready", "incomplete"}:
+        raise ValueError("embedding status must be 'ready' or 'incomplete'")
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE users SET embedding_status = ? WHERE user_id = ?", (status, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def list_users() -> List[dict]:
     conn = get_connection()
     try:

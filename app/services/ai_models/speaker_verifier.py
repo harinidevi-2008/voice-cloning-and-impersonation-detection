@@ -49,6 +49,7 @@ from app.services.ai_models.embedding_store import (
     load_embedding,
 )
 from app.services.ai_models.preprocess import preprocess
+from app.services.ai_models.exceptions import SpeakerEmbeddingMissingError
 
 # Resolved relative to this file, not the process's working directory —
 # see the WINDOWS FIX note above.
@@ -117,10 +118,12 @@ def get_similarity(audio_path: str, user_id: int) -> float:
     stored = load_embedding(user_id)
 
     if stored is None:
-        raise ValueError(
-            f"No enrolled embedding found for user_id={user_id}. "
-            "Was this user enrolled while AI_BACKEND=real?"
-        )
+        raise SpeakerEmbeddingMissingError(f"No embedding for user_id={user_id}")
+
+    # Fail explicitly before cosine similarity rather than letting sklearn
+    # surface an opaque ValueError/500 for legacy or corrupt embedding rows.
+    if live.size == 0 or stored.size == 0 or live.shape != stored.shape:
+        raise SpeakerEmbeddingMissingError(f"Invalid embedding for user_id={user_id}")
 
     score = cosine_similarity([live], [stored])[0][0]
     return float(score)

@@ -35,6 +35,7 @@ expected direction (see Member 3's demo audio naming convention).
 
 import hashlib
 import os
+import numpy as np
 
 
 def _hash_to_unit_float(seed: str) -> float:
@@ -68,6 +69,15 @@ def enroll_speaker(name: str, role: str, audio_path: str) -> int:
     """
     seed = f"{name}:{role}:{os.path.basename(audio_path)}"
     return int(_hash_to_unit_float(seed) * 1_000_000)
+
+
+def build_mock_embedding(name: str, role: str, audio_path: str) -> np.ndarray:
+    """Create a deterministic 192-D stand-in so mock enrollment has parity."""
+    seed = f"{name}:{role}:{os.path.basename(audio_path)}".encode("utf-8")
+    digest = hashlib.shake_256(seed).digest(192 * 4)
+    vector = np.frombuffer(digest, dtype=np.uint32).astype(np.float32)
+    vector = (vector / np.float32(2**32 - 1)) * 2 - 1
+    return vector / np.linalg.norm(vector)
 
 
 def get_similarity(audio_path: str, user_id: int) -> float:

@@ -22,6 +22,7 @@ import numpy as np
 from app.config import DATA_DIR
 
 EMBEDDING_DB_PATH = os.path.join(DATA_DIR, "voice_embeddings.db")
+EMBEDDING_DIMENSION = 192
 
 
 def init_db() -> None:
@@ -83,6 +84,7 @@ def save_embedding_with_id(user_id: int, name: str, role: str, embedding: np.nda
 
 
 def load_embedding(user_id: int):
+    """Load a usable float32 embedding, or ``None`` for absent/bad legacy rows."""
     conn = sqlite3.connect(EMBEDDING_DB_PATH)
     try:
         row = conn.execute(
@@ -91,9 +93,24 @@ def load_embedding(user_id: int):
     finally:
         conn.close()
 
-    if row is None:
+    if row is None or row[0] is None:
         return None
-    return np.frombuffer(row[0], dtype=np.float32)
+    try:
+        embedding = np.frombuffer(row[0], dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+    return embedding if embedding.size else None
+
+
+def has_valid_embedding(user_id: int) -> bool:
+    """True only for a finite ECAPA-sized vector usable for verification."""
+    embedding = load_embedding(user_id)
+    return bool(
+        embedding is not None
+        and embedding.ndim == 1
+        and embedding.size == EMBEDDING_DIMENSION
+        and np.isfinite(embedding).all()
+    )
 
 
 def delete_embedding(user_id: int) -> None:

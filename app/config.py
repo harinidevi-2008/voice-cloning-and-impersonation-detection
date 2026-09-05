@@ -32,13 +32,15 @@ CONVERTED_AUDIO_SAMPLE_RATE = 16000
 CONVERTED_AUDIO_CHANNELS = 1  # mono
 
 # ---------------------------------------------------------------------------
-# Final impersonation-risk fusion weights
-# ImpersonationRisk = 0.5*SpoofRisk + 0.3*IdentityMismatchRisk + 0.2*ContextRisk
+# Final risk fusion weights.  These are intentionally independent, direct
+# signals so an operator can explain exactly how a verdict was produced.
+# Risk = 0.40*speaker_mismatch + 0.35*spoof + 0.15*amount + 0.10*urgency
 # ---------------------------------------------------------------------------
 RISK_WEIGHTS = {
-    "spoof": 0.5,
-    "identity": 0.3,
-    "context": 0.2,
+    "identity": 0.40,
+    "spoof": 0.35,
+    "amount": 0.15,
+    "urgency": 0.10,
 }
 
 # ---------------------------------------------------------------------------
@@ -71,14 +73,16 @@ UNUSUAL_TIME_END_HOUR = 5     # 5 AM
 # Verdict thresholds on the final impersonation_risk score [0, 1]
 # ---------------------------------------------------------------------------
 VERDICT_THRESHOLDS = {
-    "high": 0.70,
-    "medium": 0.40,
+    "critical": 0.80,
+    "high": 0.60,
+    "medium": 0.35,
 }
 
 VERDICT_LABELS = {
-    "high": "HIGH_RISK_LIKELY_IMPERSONATION",
-    "medium": "MEDIUM_RISK_MANUAL_REVIEW",
-    "low": "LOW_RISK_LIKELY_GENUINE",
+    "critical": "CRITICAL",
+    "high": "HIGH",
+    "medium": "MEDIUM",
+    "low": "LOW",
 }
 
 # ---------------------------------------------------------------------------
@@ -106,24 +110,42 @@ WHISPER_MODEL_SIZE = os.environ.get("VISL_WHISPER_MODEL_SIZE", "tiny")
 # caller_known=True, when not explicitly provided (Task 5: automatic known-
 # contact detection). Deliberately equal to the identity risk formula's own
 # implicit midpoint is NOT required — this is a separate, tunable threshold.
-KNOWN_CONTACT_SIMILARITY_THRESHOLD = 0.75
+# ECAPA calibration: values are configurable here, never scattered through
+# inference or presentation code.
+SPEAKER_VERIFIED = float(os.environ.get("VISL_SPEAKER_VERIFIED", "0.80"))
+SPEAKER_LIKELY = float(os.environ.get("VISL_SPEAKER_LIKELY", "0.65"))
+SPEAKER_REVIEW = float(os.environ.get("VISL_SPEAKER_REVIEW", "0.45"))
+KNOWN_CONTACT_SIMILARITY_THRESHOLD = SPEAKER_VERIFIED
+
+# AASIST calibration bands.  A raw score is model evidence, not a statement
+# of absolute truth, so the UI always presents one of these calibrated labels.
+SPOOF_VERY_HIGH_GENUINE_MAX = 0.25
+SPOOF_PROBABLY_GENUINE_MAX = 0.45
+SPOOF_SUSPICIOUS_MAX = 0.65
+SPOOF_LIKELY_AI_MAX = 0.85
 
 # Keyword lists for the urgency NLP detector (app/services/urgency_detector.py).
 # Checked case-insensitively as substrings of the transcript.
 HIGH_URGENCY_KEYWORDS = [
     "immediately", "urgent", "urgently", "right now", "don't tell anyone",
-    "do not tell anyone", "emergency", "quickly", "hurry", "asap",
+    "do not tell anyone", "emergency", "quickly", "hurry", "asap", "confidential",
+    "otp", "transfer now",
     "before it's too late", "act now", "final warning",
 ]
 MEDIUM_URGENCY_KEYWORDS = [
     "soon", "today", "as soon as possible", "please hurry", "time sensitive",
-    "before end of day", "shortly",
+    "before end of day", "shortly", "possible", "required",
 ]
 
 # ---------------------------------------------------------------------------
 # analysis.db — persistent log of every analyzed call (Task 6)
 # ---------------------------------------------------------------------------
 ANALYSIS_DB_PATH = os.path.join(DATA_DIR, "analysis.db")
+
+# Opt-in development reset. Set this to true only for a deliberate clean demo.
+DEVELOPMENT_RESET_ON_STARTUP = os.environ.get(
+    "VISL_DEVELOPMENT_RESET_ON_STARTUP", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # ---------------------------------------------------------------------------
 # CORS

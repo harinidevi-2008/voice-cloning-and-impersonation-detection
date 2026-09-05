@@ -15,7 +15,8 @@ from app.services import risk_engine
 from app.services import transcription_service
 from app.services.entity_extraction import extract_amount
 from app.services.urgency_detector import detect_urgency_detailed
-from app.services.ai_models.exceptions import AudioDecodeError
+from app.services.ai_models.exceptions import AudioDecodeError, SpeakerEmbeddingMissingError
+from app.services.ai_models.embedding_store import has_valid_embedding, init_db as init_embedding_db
 from app.config import AI_BACKEND, URGENCY_RISK_MAP, KNOWN_CONTACT_SIMILARITY_THRESHOLD
 
 router = APIRouter()
@@ -109,8 +110,19 @@ async def analyze_call(
         if claimed_user is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"claimed_user_id {claimed_user_id} is not enrolled.",
+                detail="Claimed speaker not found",
             )
+        # Check the secondary embedding store before model inference.  The
+        # profile DB and embedding DB are intentionally separate, so an old
+        # or interrupted enrollment can leave a valid profile without a
+        # voiceprint.  That is a client-actionable 422, never a 500.
+        init_embedding_db()
+        if not has_valid_embedding(claimed_user_id):
+            logger.info(
+                "analyze: claimed_user_id=%s speaker_found=%s embedding_loaded=%s",
+                claimed_user_id, True, False,
+            )
+            raise HTTPException(status_code=422, detail="Speaker has no enrolled voice sample")
 
     # --- save + normalize audio ---
     raw_path = save_upload_file(audio_file, prefix="analyze")
@@ -121,6 +133,18 @@ async def analyze_call(
             status_code=400,
             detail=f"Could not process the uploaded audio: {exc}",
         )
+    except SpeakerEmbeddingMissingError as exc:
+        logger.info(
+            "analyze speaker: claimed_user_id=%s speaker_found=%s embedding_loaded=%s",
+            claimed_user_id, claimed_user is not None, False,
+        )
+        raise HTTPException(status_code=422, detail="Speaker has no enrolled voice sample") from exc
+    except (ValueError, RuntimeError) as exc:
+        logger.exception("Speaker verification failed for claimed_user_id=%s", claimed_user_id)
+        raise HTTPException(status_code=422, detail=f"Speaker verification failed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - model integration errors must be actionable
+        logger.exception("AI inference failed for claimed_user_id=%s", claimed_user_id)
+        raise HTTPException(status_code=503, detail=f"Analysis inference failed: {exc}") from exc
     finally:
         if os.path.exists(raw_path):
             try:
@@ -141,17 +165,30 @@ async def analyze_call(
             status_code=400,
             detail=f"Could not process the uploaded audio: {exc}",
         )
+    except SpeakerEmbeddingMissingError as exc:
+        logger.info(
+            "analyze: claimed_user_id=%s speaker_found=%s embedding_loaded=%s",
+            claimed_user_id, claimed_user is not None, False,
+        )
+        raise HTTPException(status_code=422, detail="Speaker has no enrolled voice sample") from exc
+    except (ValueError, RuntimeError) as exc:
+        logger.exception("Speaker verification failed for claimed_user_id=%s", claimed_user_id)
+        raise HTTPException(status_code=422, detail=f"Speaker verification failed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - model failures must not become raw 500s
+        logger.exception("AI inference failed for claimed_user_id=%s", claimed_user_id)
+        raise HTTPException(status_code=503, detail=f"Analysis inference failed: {exc}") from exc
     ai_elapsed_ms = (time.perf_counter() - ai_start) * 1000
 
     # --- transcription + auto-extraction (Tasks 3, 4, 5) ---
     try:
-        # Pass the ORIGINAL uploaded filename as the mock heuristic's hint
-        # (not saved_path, whose UUID could otherwise confuse the mock's
-        # digit-sequence detection — see transcription_service.py's
-        # module docstring for the bug this fixes).
+        # Pass the original filename as the mock heuristic's hint. Real
+        # Whisper inference always receives the normalized 16 kHz mono WAV.
         transcript = transcription_service.transcribe(saved_path, filename_hint=audio_file.filename)
-    except Exception:  # noqa: BLE001 — transcription failure must not sink the whole analysis
-        logger.exception("Transcription failed for %s; continuing without transcript", saved_path)
+    except Exception as exc:  # transcription is required evidence, never silently discarded
+        logger.exception("Transcription failed for %s", saved_path)
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}") from exc
+
+    if not transcript or not transcript.strip():
         transcript = None
 
     detected_amount = extract_amount(transcript) if transcript else None
@@ -172,7 +209,7 @@ async def analyze_call(
     else:
         known_contact = False
 
-    final_transaction_value = transaction_value if transaction_value is not None else (detected_amount or 0.0)
+    final_transaction_value = transaction_value if transaction_value is not None else detected_amount
     final_urgency = urgency.strip().lower() if urgency is not None else detected_urgency
 
     # --- context risk ---
@@ -184,11 +221,11 @@ async def analyze_call(
     context_risk = context_result["context_risk"]
 
     # --- fusion ---
-    identity_mismatch_risk = risk_engine.compute_identity_mismatch_risk(speaker_similarity)
-    impersonation_risk = risk_engine.compute_impersonation_risk(
+    impersonation_risk = risk_engine.compute_weighted_risk(
         spoof_score=spoof_score,
-        identity_mismatch_risk=identity_mismatch_risk,
-        context_risk=context_risk,
+        speaker_similarity=speaker_similarity,
+        urgency=final_urgency,
+        transaction_amount=final_transaction_value,
     )
     verdict = risk_engine.get_verdict(impersonation_risk)
 
@@ -210,10 +247,11 @@ async def analyze_call(
     total_elapsed_ms = (time.perf_counter() - pipeline_start) * 1000
     response.headers["X-Processing-Time-Ms"] = f"{total_elapsed_ms:.1f}"
     logger.info(
-        "analyze: backend=%s claimed_user_id=%s ai_ms=%.1f total_ms=%.1f verdict=%s "
-        "amount=%s urgency=%s known_contact=%s",
-        AI_BACKEND, claimed_user_id, ai_elapsed_ms, total_elapsed_ms, verdict,
-        final_transaction_value, final_urgency, known_contact,
+        "analyze: backend=%s claimed_user_id=%s speaker_found=%s embedding_loaded=%s "
+        "similarity=%s spoof_score=%.4f final_risk=%.4f verdict=%s amount=%s urgency=%s",
+        AI_BACKEND, claimed_user_id, claimed_user is not None,
+        speaker_similarity is not None, speaker_similarity, spoof_score,
+        impersonation_risk, verdict, final_transaction_value, final_urgency,
     )
 
     return AnalyzeResponse(
@@ -228,5 +266,8 @@ async def analyze_call(
         urgency_confidence=urgency_details["confidence"],
         urgency_keywords=urgency_details["matched_keywords"],
         known_contact=known_contact,
+        speaker_status=risk_engine.classify_speaker_similarity(speaker_similarity),
+        spoof_category=risk_engine.classify_spoof_score(spoof_score),
+        spoof_label=risk_engine.classify_spoof_score(spoof_score),
         call_id=call_id,
     )

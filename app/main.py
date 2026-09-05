@@ -3,9 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import CORS_ALLOW_ORIGINS, AI_BACKEND
+from app.config import AI_BACKEND, CORS_ALLOW_ORIGINS, DEVELOPMENT_RESET_ON_STARTUP
 from app.db.database import init_db
-from app.db import analysis_db
+from app.db import analysis_db, crud
+from app.db.development_reset import reset_development_data
+from app.services.ai_models.embedding_store import has_valid_embedding, init_db as init_embedding_db
 from app.routers import enroll, users, analyze, analysis
 
 # Without this, INFO-level logs (e.g. app/routers/analyze.py's per-request
@@ -22,7 +24,23 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    init_embedding_db()
     analysis_db.init_db()
+    if DEVELOPMENT_RESET_ON_STARTUP:
+        reset_development_data()
+        logging.getLogger("visl.startup").info("Development runtime data reset complete.")
+        yield
+        return
+    # Legacy profiles may predate voiceprint persistence. Keep them in the
+    # database for audit/history, but never expose them as verifiable.
+    for user in crud.list_users():
+        if has_valid_embedding(user["user_id"]):
+            crud.set_embedding_status(user["user_id"], "ready")
+        else:
+            crud.set_embedding_status(user["user_id"], "incomplete")
+            logging.getLogger("visl.startup").warning(
+                "User %s has no voice embedding.", user["user_id"]
+            )
     yield
 
 
@@ -52,7 +70,7 @@ async def root():
     return {
         "service": "voice-integrity-security-layer-backend",
         "status": "ok",
-        "endpoints": ["/enroll", "/users", "/analyze", "/docs"],
+        "endpoints": ["/enroll", "/enroll/speakers", "/users", "/analyze", "/docs"],
         # Not part of the Section 3 interface contract (that's /enroll,
         # /users, /analyze only) — added so the dashboard can show the
         # ACTUAL configured backend instead of a hardcoded guess. See

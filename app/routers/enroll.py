@@ -1,21 +1,40 @@
 import logging
 import os
+from typing import List
 
 from fastapi import APIRouter, Form, File, UploadFile, HTTPException
 
-from app.schemas import EnrollResponse
+from app.schemas import EnrollResponse, EnrolledSpeakerOut
 from app.storage.audio_store import save_upload_file
 from app.services.audio_conversion import convert_to_standard_wav
 from app.db import crud
 from app.config import AI_BACKEND
 from app.services import mock_ai_service
 from app.services.ai_models.exceptions import AudioDecodeError
+from app.services.ai_models.embedding_store import (
+    EMBEDDING_DIMENSION,
+    delete_embedding,
+    has_valid_embedding,
+    init_db as init_embedding_db,
+    save_embedding_with_id,
+)
 
 if AI_BACKEND == "real":
     from app.services import real_ai_service
 
 router = APIRouter()
 logger = logging.getLogger("visl.enroll")
+
+
+@router.get("/enroll/speakers", response_model=List[EnrolledSpeakerOut])
+async def get_verifiable_speakers():
+    """Return only profiles with a valid persisted voice embedding."""
+    init_embedding_db()
+    return [
+        EnrolledSpeakerOut(id=row["user_id"], name=row["name"], role=row["role"])
+        for row in crud.list_users()
+        if has_valid_embedding(row["user_id"])
+    ]
 
 
 @router.post("/enroll", response_model=EnrollResponse)
@@ -75,6 +94,17 @@ async def enroll_user(
             # Exercise the mock interface for parity; result unused (mock's
             # pseudo-id was never the source of truth — see mock_ai_service.py).
             mock_ai_service.enroll_speaker(name=name, role=role, audio_path=saved_path)
+            # Preserve the enrollment lifecycle in mock mode too: a caller
+            # can only be selected once a usable 192-D voiceprint exists.
+            init_embedding_db()
+            save_embedding_with_id(
+                user_id, name, role,
+                mock_ai_service.build_mock_embedding(name, role, saved_path),
+            )
+
+        if not has_valid_embedding(user_id):
+            raise RuntimeError("voice embedding was not persisted or has an invalid dimension")
+        crud.set_embedding_status(user_id, "ready")
     except AudioDecodeError as exc:
         _rollback(user_id, saved_path)
         raise HTTPException(
@@ -90,7 +120,11 @@ async def enroll_user(
                    "No user was created — please try again.",
         )
 
-    return EnrollResponse(user_id=user_id)
+    return EnrollResponse(
+        user_id=user_id,
+        embedding_dimension=EMBEDDING_DIMENSION,
+        verification_status="Ready for verification",
+    )
 
 
 def _cleanup_file(path: str) -> None:
@@ -107,5 +141,10 @@ def _rollback(user_id: int, saved_path: str) -> None:
         crud.delete_user(user_id)
     except Exception:  # noqa: BLE001 — rollback must never mask the original error
         logger.exception("Failed to roll back user_id=%s after enrollment failure", user_id)
+
+    try:
+        delete_embedding(user_id)
+    except Exception:  # noqa: BLE001 — rollback must never mask the original error
+        logger.exception("Failed to remove embedding for user_id=%s after enrollment failure", user_id)
 
     _cleanup_file(saved_path)

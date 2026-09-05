@@ -29,6 +29,13 @@ def init_db() -> None:
             )
             """
         )
+        # SQLite does not add new columns when CREATE TABLE IF NOT EXISTS is
+        # run against an existing database, so migrate the original schema.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "embedding_status" not in columns:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'incomplete'"
+            )
         conn.commit()
     finally:
         conn.close()

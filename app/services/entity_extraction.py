@@ -39,9 +39,10 @@ _SCALE_WORDS = {
 # English scale words directly after the number, e.g. "50000", "2.5 lakh",
 # "rs. 1,20,000", "₹300000".
 _DIGIT_AMOUNT_RE = re.compile(
-    r"(?:rs\.?|inr|₹)?\s*"
+    r"(?:(rs\.?|inr|₹)\s*)?"
     r"(\d[\d,]*(?:\.\d+)?)"
-    r"\s*(lakhs?|lacs?|crores?|thousand|million)?",
+    r"\s*(lakhs?|lacs?|crores?|thousand|million)?"
+    r"\s*(rupees?|rs\.?|inr)?",
     re.IGNORECASE,
 )
 
@@ -79,7 +80,7 @@ def _parse_number_word_sequence(words: list) -> Optional[int]:
     return total if matched_any and total > 0 else None
 
 
-def extract_amount(transcript: str) -> Optional[float]:
+def extract_amount(transcript: str) -> Optional[int]:
     """
     Returns the detected transaction amount as a float (in rupees), or
     None if no amount could be confidently extracted from the transcript.
@@ -91,12 +92,10 @@ def extract_amount(transcript: str) -> Optional[float]:
 
     # --- Try digit-based amounts first (most common in real transcripts) ---
     for match in _DIGIT_AMOUNT_RE.finditer(text):
-        digits_str, scale_word = match.groups()
+        currency_prefix, digits_str, scale_word, currency_suffix = match.groups()
         if not digits_str:
             continue
-        has_currency_marker = bool(
-            re.match(r"^\s*(rs\.?|inr|₹)", text[max(0, match.start() - 5):match.start() + 3], re.IGNORECASE)
-        )
+        has_currency_marker = bool(currency_prefix or currency_suffix)
         cleaned_digits = digits_str.replace(",", "")
         try:
             value = float(cleaned_digits)
@@ -108,9 +107,9 @@ def extract_amount(transcript: str) -> Optional[float]:
             multiplier = _SCALE_WORDS.get(scale_key) or _SCALE_WORDS.get(scale_key.rstrip("s"))
             if multiplier:
                 value *= multiplier
-            return value
+            return int(round(value))
         if has_currency_marker or len(cleaned_digits.split(".")[0]) >= 3:
-            return value
+            return int(round(value))
 
     # --- Fall back to spelled-out numbers: "fifty thousand", "two lakh" ---
     tokens = re.findall(r"[A-Za-z]+", text.lower())
@@ -123,7 +122,7 @@ def extract_amount(transcript: str) -> Optional[float]:
                 j += 1
             result = _parse_number_word_sequence(tokens[i:j])
             if result is not None:
-                return float(result)
+                return int(result)
             i = j
         else:
             i += 1

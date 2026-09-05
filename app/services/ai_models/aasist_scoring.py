@@ -47,3 +47,17 @@ def spoof_probability_from_logits(logit_spoof: float, logit_bonafide: float) -> 
     exp_spoof = math.exp(logit_spoof - m)
     exp_bonafide = math.exp(logit_bonafide - m)
     return exp_spoof / (exp_spoof + exp_bonafide)
+
+
+def spoof_label_from_score(score: float) -> str:
+    """Turn calibrated spoof evidence into a human-readable confidence band."""
+    score = max(0.0, min(1.0, float(score)))
+    if score <= 0.25:
+        return "Genuine (Very High Confidence)"
+    if score <= 0.45:
+        return "Probably Genuine"
+    if score <= 0.65:
+        return "Suspicious"
+    if score <= 0.85:
+        return "Likely AI Generated"
+    return "Highly Likely AI Generated"

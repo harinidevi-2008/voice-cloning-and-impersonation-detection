@@ -10,6 +10,14 @@ from pydantic import BaseModel
 
 class EnrollResponse(BaseModel):
     user_id: int
+    embedding_dimension: Optional[int] = None
+    verification_status: Optional[str] = None
+
+
+class EnrolledSpeakerOut(BaseModel):
+    id: int
+    name: str
+    role: str
 
 
 class UserOut(BaseModel):
@@ -42,4 +50,7 @@ class AnalyzeResponse(BaseModel):
     urgency_confidence: Optional[float] = None
     urgency_keywords: Optional[list] = None
     known_contact: Optional[bool] = None
+    speaker_status: Optional[str] = None
+    spoof_category: Optional[str] = None
+    spoof_label: Optional[str] = None
     call_id: Optional[str] = None
