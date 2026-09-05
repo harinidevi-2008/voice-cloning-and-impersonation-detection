@@ -1,8 +1,14 @@
-fastapi==0.141.1
-uvicorn[standard]==0.30.0
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 pydantic==2.9.2
 pytest==8.3.3
 httpx==0.27.2
-streamlit-mic-recorder==0.0.6
-streamlit>=1.28.0
+soundfile==0.14.0
+
+# NOTE: audio conversion (app/services/audio_conversion.py) shells out to
+# the `ffmpeg` binary, which is a SYSTEM dependency, not a pip package.
+# Install it separately:
+#   Ubuntu/Debian:  sudo apt install ffmpeg
+#   macOS:          brew install ffmpeg
+#   Windows:        https://ffmpeg.org/download.html (add to PATH)

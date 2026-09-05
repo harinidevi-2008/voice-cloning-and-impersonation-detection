@@ -8,21 +8,36 @@ os.environ.setdefault("PYTHONPATH", os.path.dirname(os.path.dirname(os.path.absp
 from fastapi.testclient import TestClient
 from app.main import app
 from app.db.database import init_db
+from app.db import analysis_db
 from app.config import AI_BACKEND, AUDIO_UPLOAD_DIR
 from app.services.ai_models.exceptions import AudioDecodeError
 
 # TestClient's plain instantiation doesn't reliably fire FastAPI's startup
-# event across versions, so make sure the DB schema exists before any test
+# event across versions, so make sure both DB schemas exist before any test
 # runs (mirrors what actually happens when uvicorn starts the real app).
 init_db()
+analysis_db.init_db()
 
 client = TestClient(app)
 
 
 def _fake_wav_bytes() -> bytes:
-    # Not a real WAV, but the API only cares about extension + non-empty
-    # content for this mocked stage — good enough for endpoint testing.
-    return b"RIFF....WAVEfmt "
+    # Genuinely valid (if trivial) WAV audio — required now that every
+    # upload goes through real ffmpeg conversion (Task 1:
+    # app/services/audio_conversion.py) regardless of AI_BACKEND. A plain
+    # byte string like b"RIFF....WAVEfmt " sailed through the old pipeline
+    # because nothing actually decoded audio content in mock mode; now
+    # something always does, so tests need real (if minimal) audio.
+    # Uses the stdlib `wave` module rather than numpy/soundfile so the
+    # test suite doesn't gain a new dependency for this.
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit PCM
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 1600)  # 0.1s of silence
+    return buf.getvalue()
 
 
 def test_enroll_and_list_users():
@@ -72,12 +87,18 @@ def test_analyze_returns_latency_header():
     assert "x-processing-time-ms" in {k.lower() for k in resp.headers.keys()}
     elapsed = float(resp.headers["x-processing-time-ms"])
     assert elapsed >= 0.0
-    # The header must never appear in the JSON body itself — the contract
-    # in Section 3 of the team's work-division doc is exactly 5 fields.
-    assert set(resp.json().keys()) == {
+    # The original Section 3 contract (5 fields) must always be present.
+    # Additional fields (transcript, detected_amount, detected_urgency,
+    # known_contact, call_id) are a deliberate, additive, backward-
+    # compatible extension for the dashboard refactor — see
+    # app/schemas.py's AnalyzeResponse docstring — so this checks for a
+    # superset, not an exact match.
+    body_keys = set(resp.json().keys())
+    original_contract_fields = {
         "spoof_score", "speaker_similarity", "context_risk",
         "impersonation_risk", "verdict",
     }
+    assert original_contract_fields.issubset(body_keys)
 
 
 def test_analyze_with_unknown_claimed_user_returns_404():

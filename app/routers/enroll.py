@@ -5,6 +5,7 @@ from fastapi import APIRouter, Form, File, UploadFile, HTTPException
 
 from app.schemas import EnrollResponse
 from app.storage.audio_store import save_upload_file
+from app.services.audio_conversion import convert_to_standard_wav
 from app.db import crud
 from app.config import AI_BACKEND
 from app.services import mock_ai_service
@@ -24,9 +25,11 @@ async def enroll_user(
     audio_file: UploadFile = File(..., description="Reference voice sample for enrollment"),
 ):
     """
-    Enrolls a new speaker: saves their reference audio, stores their profile
-    in the local database, and registers their voiceprint with the AI
-    speaker-verification model (mock or real, per AI_BACKEND).
+    Enrolls a new speaker: saves their reference audio, normalizes it to
+    mono 16kHz WAV (accepts WAV/MP3/M4A/AAC/FLAC/OGG/MP4 — see
+    app/services/audio_conversion.py), stores their profile in the local
+    database, and registers their voiceprint with the AI speaker-
+    verification model (mock or real, per AI_BACKEND).
 
     ATOMICITY: if voiceprint registration fails after the user row has
     already been created, the user row is deleted and the saved audio file
@@ -41,7 +44,20 @@ async def enroll_user(
     if not role:
         raise HTTPException(status_code=400, detail="'role' must not be empty.")
 
-    saved_path = save_upload_file(audio_file, prefix="enroll")
+    raw_path = save_upload_file(audio_file, prefix="enroll")
+
+    try:
+        saved_path = convert_to_standard_wav(raw_path)
+    except AudioDecodeError as exc:
+        _cleanup_file(raw_path)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not process the uploaded audio for enrollment: {exc}",
+        )
+
+    # The pre-conversion upload is no longer needed once we have the
+    # normalized WAV — only the converted file is used downstream.
+    _cleanup_file(raw_path)
 
     # Our local DB is authoritative for user_id (see crud.py note).
     user_id = crud.create_user(name=name, role=role, audio_path=saved_path)
@@ -77,6 +93,14 @@ async def enroll_user(
     return EnrollResponse(user_id=user_id)
 
 
+def _cleanup_file(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        logger.exception("Failed to remove temporary file %s", path)
+
+
 def _rollback(user_id: int, saved_path: str) -> None:
     """Best-effort cleanup: delete the user row and the uploaded file."""
     try:
@@ -84,8 +108,4 @@ def _rollback(user_id: int, saved_path: str) -> None:
     except Exception:  # noqa: BLE001 — rollback must never mask the original error
         logger.exception("Failed to roll back user_id=%s after enrollment failure", user_id)
 
-    try:
-        if saved_path and os.path.exists(saved_path):
-            os.remove(saved_path)
-    except OSError:
-        logger.exception("Failed to remove audio file %s after enrollment failure", saved_path)
+    _cleanup_file(saved_path)

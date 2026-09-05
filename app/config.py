@@ -16,8 +16,20 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 AUDIO_UPLOAD_DIR = os.path.join(DATA_DIR, "audio_uploads")
 DB_PATH = os.path.join(DATA_DIR, "voice_integrity.db")
 
-ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
+ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".mp4", ".webm"}
+# .webm added: browsers' native MediaRecorder API (used by the dashboard's
+# "Speak Now" mic recording via streamlit-mic-recorder) outputs webm/Opus,
+# not wav, directly. This was a real bug found during testing — real mic
+# recordings were being rejected with HTTP 400 before ever reaching ffmpeg
+# conversion, because .webm wasn't in this set. ffmpeg decodes webm/Opus
+# natively (already confirmed present in this project's ffmpeg build).
 MAX_AUDIO_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB, generous for a demo
+
+# Every uploaded/recorded audio is normalized to this format before ANY
+# model (AASIST, ECAPA, transcription) ever sees it — see
+# app/services/audio_conversion.py.
+CONVERTED_AUDIO_SAMPLE_RATE = 16000
+CONVERTED_AUDIO_CHANNELS = 1  # mono
 
 # ---------------------------------------------------------------------------
 # Final impersonation-risk fusion weights
@@ -77,6 +89,41 @@ VERDICT_LABELS = {
 #         requirements-real-ai.txt to be installed. See
 #         app/services/ai_service.py and app/services/real_ai_service.py.
 AI_BACKEND = os.environ.get("VISL_AI_BACKEND", "mock").strip().lower()
+
+# ---------------------------------------------------------------------------
+# Automatic metadata extraction (replaces manual amount/urgency/known-contact
+# entry in the dashboard — see app/services/entity_extraction.py,
+# app/services/urgency_detector.py, and app/routers/analyze.py)
+# ---------------------------------------------------------------------------
+# "real" (default when AI_BACKEND=real): transcribe with faster-whisper.
+# "mock": deterministic stand-in transcript (same filename-hint pattern as
+#         the rest of the mock stack), so the whole pipeline is testable
+#         and demoable without downloading a transcription model.
+TRANSCRIPTION_BACKEND = os.environ.get("VISL_TRANSCRIPTION_BACKEND", AI_BACKEND).strip().lower()
+WHISPER_MODEL_SIZE = os.environ.get("VISL_WHISPER_MODEL_SIZE", "tiny")
+
+# Speaker similarity at/above this is treated as "recognized speaker" ->
+# caller_known=True, when not explicitly provided (Task 5: automatic known-
+# contact detection). Deliberately equal to the identity risk formula's own
+# implicit midpoint is NOT required — this is a separate, tunable threshold.
+KNOWN_CONTACT_SIMILARITY_THRESHOLD = 0.75
+
+# Keyword lists for the urgency NLP detector (app/services/urgency_detector.py).
+# Checked case-insensitively as substrings of the transcript.
+HIGH_URGENCY_KEYWORDS = [
+    "immediately", "urgent", "urgently", "right now", "don't tell anyone",
+    "do not tell anyone", "emergency", "quickly", "hurry", "asap",
+    "before it's too late", "act now", "final warning",
+]
+MEDIUM_URGENCY_KEYWORDS = [
+    "soon", "today", "as soon as possible", "please hurry", "time sensitive",
+    "before end of day", "shortly",
+]
+
+# ---------------------------------------------------------------------------
+# analysis.db — persistent log of every analyzed call (Task 6)
+# ---------------------------------------------------------------------------
+ANALYSIS_DB_PATH = os.path.join(DATA_DIR, "analysis.db")
 
 # ---------------------------------------------------------------------------
 # CORS

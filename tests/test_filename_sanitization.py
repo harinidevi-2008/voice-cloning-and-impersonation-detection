@@ -70,3 +70,21 @@ def test_save_upload_file_rejects_extension_regardless_of_sanitization():
     with pytest.raises(HTTPException) as exc_info:
         save_upload_file(bad, prefix="test")
     assert exc_info.value.status_code == 400
+
+
+def test_webm_extension_is_allowed():
+    # Regression test: streamlit-mic-recorder's real browser recordings are
+    # webm, not wav. This was rejected with HTTP 400 before .webm was added
+    # to ALLOWED_AUDIO_EXTENSIONS -- confirmed via a live end-to-end test
+    # during development (see README's Task 1 hardening notes).
+    from app.config import ALLOWED_AUDIO_EXTENSIONS
+    assert ".webm" in ALLOWED_AUDIO_EXTENSIONS
+
+    recording = _make_upload("recording_1234567890.webm")
+    saved_path = save_upload_file(recording, prefix="analyze")
+    try:
+        assert os.path.exists(saved_path)
+        assert saved_path.endswith(".webm")
+    finally:
+        if os.path.exists(saved_path):
+            os.remove(saved_path)

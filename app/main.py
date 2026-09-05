@@ -5,7 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import CORS_ALLOW_ORIGINS, AI_BACKEND
 from app.db.database import init_db
-from app.routers import enroll, users, analyze
+from app.db import analysis_db
+from app.routers import enroll, users, analyze, analysis
 
 # Without this, INFO-level logs (e.g. app/routers/analyze.py's per-request
 # latency line) are silently dropped — Python's logging module only emits
@@ -21,6 +22,7 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    analysis_db.init_db()
     yield
 
 
@@ -62,3 +64,4 @@ async def root():
 app.include_router(enroll.router, tags=["enrollment"])
 app.include_router(users.router, tags=["users"])
 app.include_router(analyze.router, tags=["analysis"])
+app.include_router(analysis.router, tags=["analysis-history"])

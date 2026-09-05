@@ -19,3 +19,9 @@ numpy==2.4.6
 scipy==1.17.1
 HyperPyYAML==1.2.3
 sentencepiece==0.2.2
+
+# Transcription (Tasks 3/4/5 dashboard refactor: auto-detect amount/urgency/
+# known-contact from speech instead of manual entry). CTranslate2-based, not
+# full PyTorch, so this stays lightweight relative to the AASIST/ECAPA stack
+# above -- see app/services/transcription_service.py.
+faster-whisper==1.2.1
