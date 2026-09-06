@@ -14,7 +14,13 @@ changes were needed downstream: this just replaces how the value gets
 INTO the pipeline (detected, not typed).
 """
 
+import unicodedata
+
 from app.config import HIGH_URGENCY_KEYWORDS, MEDIUM_URGENCY_KEYWORDS
+
+
+def _normalized(text: str) -> str:
+    return unicodedata.normalize("NFC", text or "").casefold()
 
 
 def detect_urgency(transcript: str) -> str:
@@ -26,14 +32,14 @@ def detect_urgency(transcript: str) -> str:
     if not transcript:
         return "low"
 
-    text = transcript.lower()
+    text = _normalized(transcript)
 
     for keyword in HIGH_URGENCY_KEYWORDS:
-        if keyword.lower() in text:
+        if _normalized(keyword) in text:
             return "high"
 
     for keyword in MEDIUM_URGENCY_KEYWORDS:
-        if keyword.lower() in text:
+        if _normalized(keyword) in text:
             return "medium"
 
     return "low"
@@ -47,10 +53,10 @@ def matched_urgency_keywords(transcript: str) -> list:
     """
     if not transcript:
         return []
-    text = transcript.lower()
+    text = _normalized(transcript)
     return [
         kw for kw in (HIGH_URGENCY_KEYWORDS + MEDIUM_URGENCY_KEYWORDS)
-        if kw.lower() in text
+        if _normalized(kw) in text
     ]
 
 

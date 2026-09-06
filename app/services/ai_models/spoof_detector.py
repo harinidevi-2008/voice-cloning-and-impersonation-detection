@@ -26,7 +26,7 @@ import sys
 import torch
 import numpy as np
 
-from app.services.ai_models.preprocess import prepare_aasist_waveform
+from app.services.ai_models.preprocess import prepare_aasist_input
 from app.services.ai_models.aasist_scoring import (
     spoof_label_from_score,
     spoof_probability_from_logits,
@@ -76,7 +76,11 @@ class SpoofDetector:
 
     @torch.no_grad()
     def predict(self, audio_path: str):
-        waveform = prepare_aasist_waveform(audio_path)
+        return self.predict_assessment(audio_path)["spoof_score"]
+
+    @torch.no_grad()
+    def predict_assessment(self, audio_path: str) -> dict:
+        waveform, normalized_duration = prepare_aasist_input(audio_path)
 
         x = torch.tensor(waveform, dtype=torch.float32).unsqueeze(0).to(self.device)
 
@@ -94,14 +98,13 @@ class SpoofDetector:
         logit_spoof = float(logit_row[0])
         logit_bonafide = float(logit_row[1])
 
-        return spoof_probability_from_logits(logit_spoof, logit_bonafide)
-
-    def predict_assessment(self, audio_path: str) -> dict:
-        """Return model evidence together with its calibrated confidence band."""
-        spoof_score = self.predict(audio_path)
+        spoof_score = spoof_probability_from_logits(logit_spoof, logit_bonafide)
         return {
             "spoof_score": spoof_score,
             "spoof_label": spoof_label_from_score(spoof_score),
+            "logit_spoof": logit_spoof,
+            "logit_bonafide": logit_bonafide,
+            "normalized_duration_seconds": round(normalized_duration, 4),
         }
 
 

@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Force real backend for this script regardless of the environment's
 # current VISL_AI_BACKEND setting.
 os.environ["VISL_AI_BACKEND"] = "real"
+os.environ["VISL_TRANSCRIPTION_BACKEND"] = "real"
 
 
 def main():
@@ -42,11 +43,11 @@ def main():
 
     print(f"Using audio file: {audio_path}\n")
 
-    print("[1/4] Loading real_ai_service (this loads AASIST + downloads/loads")
+    print("[1/5] Loading real_ai_service (this loads AASIST + downloads/loads")
     print("      ECAPA-TDNN on first run — may take a minute)...")
     from app.services import real_ai_service
 
-    print("\n[2/4] Enrolling a test speaker at user_id=999 (enroll_speaker_at,")
+    print("\n[2/5] Enrolling a test speaker at user_id=999 (enroll_speaker_at,")
     print("      the same function app/routers/enroll.py calls)...")
     returned_id = real_ai_service.enroll_speaker_at(
         user_id=999, name="Integration Test User", role="test", audio_path=audio_path
@@ -54,7 +55,7 @@ def main():
     assert returned_id == 999, f"expected 999 back, got {returned_id}"
     print(f"      OK — embedding stored at user_id={returned_id}")
 
-    print("\n[3/4] Checking get_similarity() finds that exact embedding again")
+    print("\n[3/5] Checking get_similarity() finds that exact embedding again")
     print("      (this is the ID-sync fix — would fail before it)...")
     similarity = real_ai_service.get_similarity(audio_path, 999)
     print(f"      Similarity of the SAME audio to itself: {similarity:.4f}")
@@ -63,9 +64,24 @@ def main():
     else:
         print("      OK — high self-similarity, as expected.")
 
-    print("\n[4/4] Running real spoof detection (AASIST)...")
-    spoof_score = real_ai_service.get_spoof_score(audio_path)
-    print(f"      Spoof score: {spoof_score:.4f}  (0 = likely genuine, 1 = likely AI-generated)")
+    print("\n[4/5] Running real spoof detection (AASIST)...")
+    from app.services.ai_models.spoof_detector import get_spoof_assessment
+    assessment = get_spoof_assessment(audio_path)
+    print(f"      Normalized duration: {assessment['normalized_duration_seconds']:.2f}s")
+    print(f"      Raw logits: spoof(class 0)={assessment['logit_spoof']:.4f}, "
+          f"bonafide(class 1)={assessment['logit_bonafide']:.4f}")
+    print(f"      Spoof score: {assessment['spoof_score']:.4f} "
+          f"({assessment['spoof_label']})")
+
+    print("\n[5/5] Running real Faster-Whisper language detection and prosody...")
+    from app.services.prosody_analyzer import analyze_prosody
+    from app.services.transcription_service import transcribe_detailed
+    transcription = transcribe_detailed(audio_path)
+    prosody = analyze_prosody(audio_path)
+    print(f"      Transcript: {transcription['transcript'] or '(no speech detected)'}")
+    print(f"      Language: {transcription['detected_language']} "
+          f"({transcription['language_probability']})")
+    print(f"      Prosody: available={prosody['available']} confidence={prosody['confidence']}")
 
     print("\n" + "=" * 60)
     print("INTEGRATION TEST PASSED")

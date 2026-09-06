@@ -53,4 +53,9 @@ class AnalyzeResponse(BaseModel):
     speaker_status: Optional[str] = None
     spoof_category: Optional[str] = None
     spoof_label: Optional[str] = None
+    detected_language: Optional[str] = None
+    language_probability: Optional[float] = None
+    prosody_risk: Optional[float] = None
+    prosody_confidence: Optional[float] = None
+    recommended_action: Optional[str] = None
     call_id: Optional[str] = None

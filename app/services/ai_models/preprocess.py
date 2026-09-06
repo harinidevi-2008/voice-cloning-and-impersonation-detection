@@ -71,15 +71,20 @@ def prepare_aasist_waveform(audio_path: str) -> np.ndarray:
     samples and takes the first 64,600 samples from longer input.  Do that
     explicitly here instead of passing variable-length input to the network.
     """
+    return prepare_aasist_input(audio_path)[0]
+
+
+def prepare_aasist_input(audio_path: str) -> tuple[np.ndarray, float]:
+    """Return official fixed-length AASIST input and pre-padding duration."""
     waveform, _ = preprocess(audio_path)
+    duration_seconds = waveform.size / TARGET_SR
     if waveform.size < MIN_RELIABLE_AUDIO_SAMPLES:
-        seconds = waveform.size / TARGET_SR
         raise AudioTooShortError(
             "Recording is too short for reliable voice analysis "
-            f"({seconds:.1f}s captured). Please record for at least "
+            f"({duration_seconds:.1f}s captured). Please record for at least "
             f"{MIN_RELIABLE_AUDIO_SECONDS:g} seconds."
         )
     if waveform.size >= AASIST_INPUT_SAMPLES:
-        return waveform[:AASIST_INPUT_SAMPLES]
+        return waveform[:AASIST_INPUT_SAMPLES], duration_seconds
     repeats = (AASIST_INPUT_SAMPLES + waveform.size - 1) // waveform.size
-    return np.tile(waveform, repeats)[:AASIST_INPUT_SAMPLES].astype(np.float32)
+    return np.tile(waveform, repeats)[:AASIST_INPUT_SAMPLES].astype(np.float32), duration_seconds

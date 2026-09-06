@@ -69,11 +69,7 @@ def test_analyze_without_claimed_user():
     assert 0.0 <= body["spoof_score"] <= 1.0
     assert 0.0 <= body["context_risk"] <= 1.0
     assert 0.0 <= body["impersonation_risk"] <= 1.0
-    assert body["verdict"] in {
-        "HIGH_RISK_LIKELY_IMPERSONATION",
-        "MEDIUM_RISK_MANUAL_REVIEW",
-        "LOW_RISK_LIKELY_GENUINE",
-    }
+    assert body["verdict"] in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
 
 
 def test_analyze_returns_latency_header():

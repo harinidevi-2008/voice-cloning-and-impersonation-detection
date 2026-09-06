@@ -30,6 +30,11 @@ def test_case_insensitive():
     assert detect_urgency("IMMEDIATELY send the money") == "high"
 
 
+def test_tamil_and_hindi_high_urgency_keywords():
+    assert detect_urgency("உடனே பணத்தை அனுப்பு, யாரிடமும் சொல்லாதே") == "high"
+    assert detect_urgency("तुरंत ट्रांसफर करो, किसी को मत बताना") == "high"
+
+
 def test_matched_keywords_returned_for_explainability():
     matches = matched_urgency_keywords("This is urgent, please hurry")
     assert "urgent" in matches

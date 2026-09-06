@@ -90,10 +90,25 @@ def _get_whisper_model():
     return _whisper_model
 
 
-def _real_transcribe(audio_path: str) -> str:
+def _real_transcribe_detailed(audio_path: str) -> dict:
     model = _get_whisper_model()
-    segments, _info = model.transcribe(audio_path, beam_size=5)
-    return " ".join(segment.text.strip() for segment in segments).strip()
+    segments, info = model.transcribe(audio_path, beam_size=5, language=None)
+    return {
+        "transcript": " ".join(segment.text.strip() for segment in segments).strip(),
+        "detected_language": getattr(info, "language", None),
+        "language_probability": getattr(info, "language_probability", None),
+    }
+
+
+def transcribe_detailed(audio_path: str, filename_hint: Optional[str] = None) -> dict:
+    """Return transcript plus real Whisper language metadata when available."""
+    if TRANSCRIPTION_BACKEND == "real":
+        return _real_transcribe_detailed(audio_path)
+    return {
+        "transcript": _mock_transcribe(filename_hint or audio_path),
+        "detected_language": None,
+        "language_probability": None,
+    }
 
 
 def transcribe(audio_path: str, filename_hint: Optional[str] = None) -> str:
@@ -113,6 +128,4 @@ def transcribe(audio_path: str, filename_hint: Optional[str] = None) -> str:
     (extract_amount/detect_urgency both treat empty/None text as "nothing
     detected" rather than erroring).
     """
-    if TRANSCRIPTION_BACKEND == "real":
-        return _real_transcribe(audio_path)
-    return _mock_transcribe(filename_hint or audio_path)
+    return transcribe_detailed(audio_path, filename_hint)["transcript"]

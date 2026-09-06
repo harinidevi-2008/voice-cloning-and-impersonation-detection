@@ -16,6 +16,15 @@ def test_crore_decimal():
 def test_digit_amount_with_currency_marker():
     assert extract_amount("Please send rs 50000 now") == 50000
     assert extract_amount("Transfer \u20b950,000 to account") == 50000
+    assert extract_amount("Transfer INR 50000 now") == 50000
+    assert extract_amount("Transfer 50,000 rupees now") == 50000
+
+
+def test_requested_indian_and_english_scales():
+    assert extract_amount("Send 2 lakh now") == 200000
+    assert extract_amount("Send 2 lakhs now") == 200000
+    assert extract_amount("Send 1 crore now") == 10_000_000
+    assert extract_amount("Send 50 thousand now") == 50000
 
 
 def test_bare_large_number_without_marker():

@@ -36,11 +36,14 @@ CONVERTED_AUDIO_CHANNELS = 1  # mono
 # signals so an operator can explain exactly how a verdict was produced.
 # Risk = 0.40*speaker_mismatch + 0.35*spoof + 0.15*amount + 0.10*urgency
 # ---------------------------------------------------------------------------
+# Final fusion keeps the two model signals dominant.  Prosody is deliberately
+# a small, confidence-gated supporting signal; context remains explainable in
+# context_engine.py (known contact, amount, urgency and unusual time).
 RISK_WEIGHTS = {
-    "identity": 0.40,
+    "identity": 0.35,
     "spoof": 0.35,
-    "amount": 0.15,
-    "urgency": 0.10,
+    "prosody": 0.10,
+    "context": 0.20,
 }
 
 # ---------------------------------------------------------------------------
@@ -141,10 +144,18 @@ HIGH_URGENCY_KEYWORDS = [
     "do not tell anyone", "emergency", "quickly", "hurry", "asap", "confidential",
     "otp", "transfer now",
     "before it's too late", "act now", "final warning",
+    # Tamil: immediate/urgent, transfer, secrecy, OTP, emergency, hurry.
+    "உடனே", "அவசரம்", "அவசரமாக", "இப்போதே", "பணத்தை மாற்று",
+    "பணம் அனுப்பு", "யாரிடமும் சொல்லாதே", "ரகசியம்", "ஒடிபி", "otp",
+    "அவசர நிலை", "சீக்கிரம்",
+    # Hindi: immediate/urgent, transfer, secrecy, OTP, emergency, hurry.
+    "तुरंत", "अति आवश्यक", "जरूरी", "अभी", "अभी भेजो", "ट्रांसफर करो",
+    "किसी को मत बताना", "गोपनीय", "ओटीपी", "आपातकाल", "जल्दी",
 ]
 MEDIUM_URGENCY_KEYWORDS = [
     "soon", "today", "as soon as possible", "please hurry", "time sensitive",
     "before end of day", "shortly", "possible", "required",
+    "இன்று", "விரைவில்", "நாளைக்குள்", "आज", "जल्द", "दिन के अंत तक",
 ]
 
 # ---------------------------------------------------------------------------

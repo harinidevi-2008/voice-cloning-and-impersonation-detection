@@ -11,6 +11,13 @@ environment (no heavy AI deps installed).
 
 import math
 
+from app.config import (
+    SPOOF_LIKELY_AI_MAX,
+    SPOOF_PROBABLY_GENUINE_MAX,
+    SPOOF_SUSPICIOUS_MAX,
+    SPOOF_VERY_HIGH_GENUINE_MAX,
+)
+
 
 def spoof_probability_from_logits(logit_spoof: float, logit_bonafide: float) -> float:
     """
@@ -52,12 +59,12 @@ def spoof_probability_from_logits(logit_spoof: float, logit_bonafide: float) -> 
 def spoof_label_from_score(score: float) -> str:
     """Turn calibrated spoof evidence into a human-readable confidence band."""
     score = max(0.0, min(1.0, float(score)))
-    if score <= 0.25:
+    if score <= SPOOF_VERY_HIGH_GENUINE_MAX:
         return "Genuine (Very High Confidence)"
-    if score <= 0.45:
+    if score <= SPOOF_PROBABLY_GENUINE_MAX:
         return "Probably Genuine"
-    if score <= 0.65:
+    if score <= SPOOF_SUSPICIOUS_MAX:
         return "Suspicious"
-    if score <= 0.85:
+    if score <= SPOOF_LIKELY_AI_MAX:
         return "Likely AI Generated"
     return "Highly Likely AI Generated"

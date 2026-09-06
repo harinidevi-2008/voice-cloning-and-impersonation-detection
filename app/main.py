@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import AI_BACKEND, CORS_ALLOW_ORIGINS
+from app.config import AI_BACKEND, CORS_ALLOW_ORIGINS, TRANSCRIPTION_BACKEND
 from app.db.database import init_db
 from app.db import analysis_db, crud
 from app.services.ai_models.embedding_store import has_valid_embedding, init_db as init_embedding_db
@@ -70,6 +70,7 @@ async def root():
         # ACTUAL configured backend instead of a hardcoded guess. See
         # dashboard/streamlit_app.py's check_backend_health().
         "ai_backend": AI_BACKEND,
+        "transcription_backend": TRANSCRIPTION_BACKEND,
     }
 
 

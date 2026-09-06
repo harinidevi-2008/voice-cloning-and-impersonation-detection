@@ -13,6 +13,7 @@ from app.services import ai_service
 from app.services import context_engine
 from app.services import risk_engine
 from app.services import transcription_service
+from app.services import prosody_analyzer
 from app.services.entity_extraction import extract_amount
 from app.services.urgency_detector import detect_urgency_detailed
 from app.services.ai_models.exceptions import (
@@ -200,11 +201,14 @@ async def analyze_call(
     try:
         # Pass the original filename as the mock heuristic's hint. Real
         # Whisper inference always receives the normalized 16 kHz mono WAV.
-        transcript = transcription_service.transcribe(saved_path, filename_hint=audio_file.filename)
+        transcription = transcription_service.transcribe_detailed(
+            saved_path, filename_hint=audio_file.filename
+        )
     except Exception as exc:  # transcription is required evidence, never silently discarded
         _discard_analysis_audio(saved_path)
         raise _stage_error("Transcription", exc) from exc
 
+    transcript = transcription["transcript"]
     if not transcript or not transcript.strip():
         transcript = None
 
@@ -213,6 +217,12 @@ async def analyze_call(
         "urgency": "low", "confidence": 0.4, "matched_keywords": [],
     }
     detected_urgency = urgency_details["urgency"]
+
+    try:
+        prosody = prosody_analyzer.analyze_prosody(saved_path)
+    except Exception as exc:  # noqa: BLE001
+        _discard_analysis_audio(saved_path)
+        raise _stage_error("Prosody analysis", exc) from exc
 
     # Known-contact: explicit value wins if given; otherwise derive from
     # similarity vs threshold (Task 5). An unclaimed/unverifiable identity
@@ -246,8 +256,9 @@ async def analyze_call(
         impersonation_risk = risk_engine.compute_weighted_risk(
             spoof_score=spoof_score,
             speaker_similarity=speaker_similarity,
-            urgency=final_urgency,
-            transaction_amount=final_transaction_value,
+            context_risk=context_risk,
+            prosody_risk=prosody["prosody_risk"],
+            prosody_confidence=prosody["confidence"],
         )
         verdict = risk_engine.get_verdict(impersonation_risk)
     except Exception as exc:  # noqa: BLE001
@@ -295,6 +306,11 @@ async def analyze_call(
         speaker_status=risk_engine.classify_speaker_similarity(speaker_similarity),
         spoof_category=risk_engine.classify_spoof_score(spoof_score),
         spoof_label=risk_engine.classify_spoof_score(spoof_score),
+        detected_language=transcription.get("detected_language"),
+        language_probability=transcription.get("language_probability"),
+        prosody_risk=prosody["prosody_risk"],
+        prosody_confidence=prosody["confidence"],
+        recommended_action=risk_engine.get_recommended_action(impersonation_risk),
         call_id=call_id,
     )
     _discard_analysis_audio(saved_path)
