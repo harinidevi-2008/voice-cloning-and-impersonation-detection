@@ -14,7 +14,18 @@ changes were needed downstream: this just replaces how the value gets
 INTO the pipeline (detected, not typed).
 """
 
+import re
+
 from app.config import HIGH_URGENCY_KEYWORDS, MEDIUM_URGENCY_KEYWORDS
+
+
+def _normalize_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.lower().strip()
+    text = text.replace("\u200c", "")
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def detect_urgency(transcript: str) -> str:
@@ -26,7 +37,7 @@ def detect_urgency(transcript: str) -> str:
     if not transcript:
         return "low"
 
-    text = transcript.lower()
+    text = _normalize_text(transcript)
 
     for keyword in HIGH_URGENCY_KEYWORDS:
         if keyword.lower() in text:
@@ -47,7 +58,7 @@ def matched_urgency_keywords(transcript: str) -> list:
     """
     if not transcript:
         return []
-    text = transcript.lower()
+    text = _normalize_text(transcript)
     return [
         kw for kw in (HIGH_URGENCY_KEYWORDS + MEDIUM_URGENCY_KEYWORDS)
         if kw.lower() in text
@@ -56,19 +67,23 @@ def matched_urgency_keywords(transcript: str) -> list:
 
 def detect_urgency_detailed(transcript: str) -> dict:
     """
-    Returns {"urgency": str, "confidence": float, "matched_keywords": [str]}
-    — everything the dashboard's urgency badge + explainability panel needs
-    in one call (Task 4: "confidence score" and "matched keywords").
-
-    Confidence is a simple, explainable heuristic (not a statistical
-    estimate) — consistent with this being a keyword classifier, not a
-    trained model: each additional matched keyword at the winning tier adds
-    confidence, capped at 1.0. "low" with zero matches gets a lower base
-    confidence (0.4) than a keyword-backed classification, since the
-    absence of a keyword is weaker evidence than its presence.
+    Returns {"urgency": str, "confidence": float, "matched_keywords": [str],
+    "detected_language": str} — everything the dashboard's urgency badge +
+    explainability panel needs in one call. This is still a transparent keyword
+    classifier, not a trained NLP model.
     """
     urgency = detect_urgency(transcript)
     matched = matched_urgency_keywords(transcript)
+
+    detected_language = "und"
+    if transcript:
+        normalized = _normalize_text(transcript)
+        if any(ch in normalized for ch in "அஇஎஉகஙசஜஞடதநபமயரலவழளறனஸஹ" ):
+            detected_language = "ta"
+        elif any(ch in normalized for ch in "अआइईउएओकखगघचछजझटठडढतथदधनपफबभमयरलवशषसह"):
+            detected_language = "hi"
+        else:
+            detected_language = "en"
 
     if urgency == "high":
         tier_matches = [kw for kw in matched if kw in HIGH_URGENCY_KEYWORDS]
@@ -77,10 +92,11 @@ def detect_urgency_detailed(transcript: str) -> dict:
         tier_matches = [kw for kw in matched if kw in MEDIUM_URGENCY_KEYWORDS]
         confidence = min(1.0, 0.55 + 0.15 * len(tier_matches))
     else:
-        confidence = 0.4 if not transcript else 0.6  # no keywords found
+        confidence = 0.4 if not transcript else 0.6
 
     return {
         "urgency": urgency,
         "confidence": round(confidence, 2),
         "matched_keywords": matched,
+        "detected_language": detected_language,
     }

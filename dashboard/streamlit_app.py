@@ -632,6 +632,10 @@ with tab_analyze:
         urgency_confidence = result.get("urgency_confidence")
         urgency_keywords = result.get("urgency_keywords") or []
         known_contact = result.get("known_contact")
+        prosody_score = result.get("prosody_score")
+        prosody_confidence = result.get("prosody_confidence")
+        detected_language = result.get("detected_language") or "und"
+        language_probability = result.get("language_probability")
 
         tier_name, tier_color, tier_bg = get_risk_tier(impersonation_risk)
 
@@ -645,6 +649,10 @@ with tab_analyze:
         render_card_open()
         if transcript:
             st.markdown(f'*"{transcript}"*')
+            language_note = f"Detected language: `{detected_language}`"
+            if language_probability is not None:
+                language_note += f" ({language_probability:.0%} confidence)"
+            st.caption(language_note)
         else:
             st.caption("No transcript available for this call.")
         render_card_close()
@@ -687,7 +695,7 @@ with tab_analyze:
                 _, match_color, _ = get_risk_tier(1 - speaker_similarity)
                 render_metric_card("Speaker Match", f"{speaker_similarity:.0%}", match_color, pct=speaker_similarity * 100)
         with c3:
-            render_metric_card("Fraud Risk", tier_name, tier_color, f"{impersonation_risk:.0%} score")
+            render_metric_card("Impersonation Risk", tier_name, tier_color, f"{impersonation_risk:.0%} score")
 
         with st.expander("Component score detail"):
             m1, m2 = st.columns(2)
@@ -717,12 +725,25 @@ with tab_analyze:
                     "Context Risk", context_risk, ctx_color,
                     "Based on caller familiarity, transaction amount, urgency, and call time -- all auto-detected.",
                 )
+                if prosody_score is None:
+                    render_meter("Prosody Anomaly", 0.0, THEME["text_muted"], "Insufficient voiced audio; excluded from risk fusion.")
+                else:
+                    _, prosody_color, _ = get_risk_tier(prosody_score)
+                    suffix = f" Confidence: {prosody_confidence:.0%}." if prosody_confidence is not None else ""
+                    render_meter("Prosody Anomaly", prosody_score, prosody_color, "Supporting acoustic evidence only." + suffix)
                 render_meter(
                     "Overall Impersonation Risk", impersonation_risk, tier_color,
-                    "0.5 x Spoof Risk + 0.3 x Identity Mismatch Risk + 0.2 x Context Risk",
+                    "Fusion of spoof, identity mismatch, context, and confidence-weighted prosody evidence.",
                 )
 
-        render_recommended_action(tier_name, tier_color, tier_bg)
+        action = result.get("recommended_action") or RECOMMENDED_ACTIONS[tier_name]
+        st.markdown("### Recommended Security Action")
+        st.info(action)
+        factors = result.get("risk_factors") or []
+        if factors:
+            st.markdown("### Risk Evidence")
+            for factor in factors:
+                st.markdown(f"- {factor}")
 
         with st.expander("Raw API response (for debugging / demo transparency)"):
             api_only = {k: v for k, v in result.items() if k != "_processing_time_ms"}

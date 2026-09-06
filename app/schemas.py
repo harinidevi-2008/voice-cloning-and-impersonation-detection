@@ -43,3 +43,14 @@ class AnalyzeResponse(BaseModel):
     urgency_keywords: Optional[list] = None
     known_contact: Optional[bool] = None
     call_id: Optional[str] = None
+
+    # Layered-security evidence (all additive to the original response).
+    prosody_score: Optional[float] = None
+    prosody_confidence: Optional[float] = None
+    prosody_features: Optional[dict] = None
+    prosody_anomalies: Optional[list[str]] = None
+    recommended_action: Optional[str] = None
+    risk_factors: Optional[list[str]] = None
+    detected_language: Optional[str] = None
+    language_probability: Optional[float] = None
+    processing_time_ms: Optional[float] = None

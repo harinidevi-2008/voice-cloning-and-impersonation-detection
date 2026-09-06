@@ -33,12 +33,14 @@ CONVERTED_AUDIO_CHANNELS = 1  # mono
 
 # ---------------------------------------------------------------------------
 # Final impersonation-risk fusion weights
-# ImpersonationRisk = 0.5*SpoofRisk + 0.3*IdentityMismatchRisk + 0.2*ContextRisk
+# ImpersonationRisk = 0.45*SpoofRisk + 0.25*IdentityMismatchRisk +
+#                     0.20*ContextRisk + 0.10*ProsodyRisk
 # ---------------------------------------------------------------------------
 RISK_WEIGHTS = {
-    "spoof": 0.5,
-    "identity": 0.3,
-    "context": 0.2,
+    "spoof": 0.45,
+    "identity": 0.25,
+    "context": 0.20,
+    "prosody": 0.10,
 }
 
 # ---------------------------------------------------------------------------
@@ -68,12 +70,38 @@ UNUSUAL_TIME_START_HOUR = 23  # 11 PM
 UNUSUAL_TIME_END_HOUR = 5     # 5 AM
 
 # ---------------------------------------------------------------------------
+# Prosody anomaly thresholds
+# ---------------------------------------------------------------------------
+PROSODY_THRESHOLDS = {
+    "pitch_std_low": 15.0,
+    "pitch_std_high": 80.0,
+    "energy_std_low": 0.05,
+    "energy_std_high": 0.65,
+    "speech_ratio_low": 0.25,
+    "speech_ratio_high": 0.90,
+    "pause_ratio_high": 0.55,
+    "speaking_rate_low": 1.5,
+    "speaking_rate_high": 10.0,
+}
+
+# Weak prosody observations are deliberately excluded from risk fusion.
+PROSODY_MIN_DURATION_SECONDS = 0.75
+PROSODY_MIN_VOICED_FRAMES = 8
+
+# ---------------------------------------------------------------------------
 # Verdict thresholds on the final impersonation_risk score [0, 1]
 # ---------------------------------------------------------------------------
 VERDICT_THRESHOLDS = {
     "high": 0.70,
     "medium": 0.40,
 }
+
+# These are the practical action thresholds displayed in the dashboard and API.
+# They are intentionally aligned with the verdict bands above, but can be tuned
+# independently without changing the underlying risk metric itself.
+MEDIUM_RISK_THRESHOLD = 0.40
+HIGH_RISK_THRESHOLD = 0.70
+CRITICAL_RISK_THRESHOLD = 0.85
 
 VERDICT_LABELS = {
     "high": "HIGH_RISK_LIKELY_IMPERSONATION",
@@ -90,6 +118,10 @@ VERDICT_LABELS = {
 #         app/services/ai_service.py and app/services/real_ai_service.py.
 AI_BACKEND = os.environ.get("VISL_AI_BACKEND", "mock").strip().lower()
 
+# Privacy-retention policy for uploads. Default is false for the hackathon so
+# raw audio is deleted after normalization unless an operator explicitly opts in.
+VISL_RETAIN_RAW_AUDIO = os.environ.get("VISL_RETAIN_RAW_AUDIO", "false").strip().lower() in {"1", "true", "yes", "y"}
+
 # ---------------------------------------------------------------------------
 # Automatic metadata extraction (replaces manual amount/urgency/known-contact
 # entry in the dashboard — see app/services/entity_extraction.py,
@@ -100,7 +132,9 @@ AI_BACKEND = os.environ.get("VISL_AI_BACKEND", "mock").strip().lower()
 #         the rest of the mock stack), so the whole pipeline is testable
 #         and demoable without downloading a transcription model.
 TRANSCRIPTION_BACKEND = os.environ.get("VISL_TRANSCRIPTION_BACKEND", AI_BACKEND).strip().lower()
-WHISPER_MODEL_SIZE = os.environ.get("VISL_WHISPER_MODEL_SIZE", "tiny")
+WHISPER_MODEL_SIZE = os.environ.get("VISL_WHISPER_MODEL_SIZE", "small")
+WHISPER_DEVICE = os.environ.get("VISL_WHISPER_DEVICE", "cpu")
+WHISPER_COMPUTE_TYPE = os.environ.get("VISL_WHISPER_COMPUTE_TYPE", "int8")
 
 # Speaker similarity at/above this is treated as "recognized speaker" ->
 # caller_known=True, when not explicitly provided (Task 5: automatic known-
@@ -109,15 +143,21 @@ WHISPER_MODEL_SIZE = os.environ.get("VISL_WHISPER_MODEL_SIZE", "tiny")
 KNOWN_CONTACT_SIMILARITY_THRESHOLD = 0.75
 
 # Keyword lists for the urgency NLP detector (app/services/urgency_detector.py).
-# Checked case-insensitively as substrings of the transcript.
+# Checked case-insensitively as substrings of the transcript. These are kept in
+# a single config file so the demo can justify the rules in court-style terms.
 HIGH_URGENCY_KEYWORDS = [
     "immediately", "urgent", "urgently", "right now", "don't tell anyone",
     "do not tell anyone", "emergency", "quickly", "hurry", "asap",
     "before it's too late", "act now", "final warning",
+    "விரைவில்", "இப்போதே", "சந்தேகமின்றி", "மரியாதையின்றி",
+    "तुरंत", "अभी", "गुप्त", "सिक्योरिटी", "अति आवश्यक",
+    "जल्दी", "सबसे पहले", "सीधी कार्रवाई",
 ]
 MEDIUM_URGENCY_KEYWORDS = [
     "soon", "today", "as soon as possible", "please hurry", "time sensitive",
     "before end of day", "shortly",
+    "சிறிது நேரத்தில்", "இன்றே", "வேகமாக", "शुरू करें", "आज",
+    "जल्दी से", "आज ही",
 ]
 
 # ---------------------------------------------------------------------------

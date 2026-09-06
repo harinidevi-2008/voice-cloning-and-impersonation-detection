@@ -26,6 +26,8 @@ _WORD_TO_NUMBER = {
     "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
     "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "०": 0, "१": 1, "२": 2, "३": 3, "४": 4, "५": 5,
+    "६": 6, "७": 7, "८": 8, "९": 9,
 }
 _SCALE_WORDS = {
     "hundred": 100,
@@ -33,6 +35,7 @@ _SCALE_WORDS = {
     "lakh": 100_000, "lakhs": 100_000, "lac": 100_000, "lacs": 100_000,
     "crore": 10_000_000, "crores": 10_000_000,
     "million": 1_000_000,
+    "lakhes": 100_000, "crores": 10_000_000,
 }
 
 # Matches digit-based amounts with optional currency markers and Indian/
@@ -41,7 +44,7 @@ _SCALE_WORDS = {
 _DIGIT_AMOUNT_RE = re.compile(
     r"(?:rs\.?|inr|₹)?\s*"
     r"(\d[\d,]*(?:\.\d+)?)"
-    r"\s*(lakhs?|lacs?|crores?|thousand|million)?",
+    r"\s*(lakhs?|lacs?|crores?|thousand|million|lakh|crore)?",
     re.IGNORECASE,
 )
 
@@ -89,14 +92,13 @@ def extract_amount(transcript: str) -> Optional[float]:
 
     text = transcript.strip()
 
-    # --- Try digit-based amounts first (most common in real transcripts) ---
+    matches = []
     for match in _DIGIT_AMOUNT_RE.finditer(text):
-        digits_str, scale_word = match.groups()
-        if not digits_str:
-            continue
-        has_currency_marker = bool(
-            re.match(r"^\s*(rs\.?|inr|₹)", text[max(0, match.start() - 5):match.start() + 3], re.IGNORECASE)
-        )
+        digits, scale = match.groups()
+        if digits:
+            matches.append((match.start(), digits, scale))
+
+    for start_offset, digits_str, scale_word in sorted(matches, key=lambda x: x[0]):
         cleaned_digits = digits_str.replace(",", "")
         try:
             value = float(cleaned_digits)
@@ -109,7 +111,9 @@ def extract_amount(transcript: str) -> Optional[float]:
             if multiplier:
                 value *= multiplier
             return value
-        if has_currency_marker or len(cleaned_digits.split(".")[0]) >= 3:
+
+        nearby_text = text[max(0, start_offset - 5):min(len(text), start_offset + len(digits_str) + 8)]
+        if re.search(r"(?:rs\.?|inr|₹)", nearby_text, re.IGNORECASE) or len(cleaned_digits.split(".")[0]) >= 3:
             return value
 
     # --- Fall back to spelled-out numbers: "fifty thousand", "two lakh" ---

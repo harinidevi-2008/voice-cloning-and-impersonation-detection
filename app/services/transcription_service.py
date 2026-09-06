@@ -47,7 +47,12 @@ import os
 import re
 from typing import Optional
 
-from app.config import TRANSCRIPTION_BACKEND, WHISPER_MODEL_SIZE
+from app.config import (
+    TRANSCRIPTION_BACKEND,
+    WHISPER_COMPUTE_TYPE,
+    WHISPER_DEVICE,
+    WHISPER_MODEL_SIZE,
+)
 
 
 def _hash_to_unit_float(seed: str) -> float:
@@ -86,14 +91,24 @@ def _get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
+        _whisper_model = WhisperModel(
+            WHISPER_MODEL_SIZE,
+            device=WHISPER_DEVICE,
+            compute_type=WHISPER_COMPUTE_TYPE,
+        )
     return _whisper_model
 
 
-def _real_transcribe(audio_path: str) -> str:
+def _real_transcribe(audio_path: str) -> dict:
     model = _get_whisper_model()
-    segments, _info = model.transcribe(audio_path, beam_size=5)
-    return " ".join(segment.text.strip() for segment in segments).strip()
+    segments, info = model.transcribe(audio_path, beam_size=5, language=None)
+    text = " ".join(segment.text.strip() for segment in segments).strip()
+    # faster-whisper returns a TranscriptionInfo object, not a dictionary.
+    # Do not force English: language=None lets Whisper identify Hindi, Tamil,
+    # English, and other supported languages from the audio itself.
+    language = getattr(info, "language", None) or "und"
+    language_probability = getattr(info, "language_probability", None) or 0.0
+    return {"text": text, "language": language, "language_probability": language_probability}
 
 
 def transcribe(audio_path: str, filename_hint: Optional[str] = None) -> str:
@@ -113,6 +128,19 @@ def transcribe(audio_path: str, filename_hint: Optional[str] = None) -> str:
     (extract_amount/detect_urgency both treat empty/None text as "nothing
     detected" rather than erroring).
     """
+    return transcribe_detailed(audio_path, filename_hint).get("text", "")
+
+
+def transcribe_detailed(audio_path: str, filename_hint: Optional[str] = None) -> dict:
+    """Return text plus Whisper language metadata without breaking `transcribe`.
+
+    Mock mode labels its deterministic English template as ``en``; actual
+    language detection is only asserted when the real Whisper backend runs.
+    """
     if TRANSCRIPTION_BACKEND == "real":
         return _real_transcribe(audio_path)
-    return _mock_transcribe(filename_hint or audio_path)
+    return {
+        "text": _mock_transcribe(filename_hint or audio_path),
+        "language": "en",
+        "language_probability": 1.0,
+    }

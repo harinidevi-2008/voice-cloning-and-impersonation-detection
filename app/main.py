@@ -29,10 +29,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Voice Integrity Security Layer — Backend",
     description=(
-        "Member 2 (Systems Lead) backend: enrollment, analysis, and the "
-        "context/risk fusion engine. AI model calls are mocked until "
-        "Member 1's real spoof-detection and speaker-verification models "
-        "are integrated (see app/services/mock_ai_service.py)."
+        "Near-real-time Voice Integrity Security Layer prototype: AASIST, "
+        "ECAPA-TDNN, Faster-Whisper, prosody, context, and explainable risk fusion."
     ),
     version="0.1.0",
     lifespan=lifespan,
@@ -59,6 +57,30 @@ async def root():
         # dashboard/streamlit_app.py's check_backend_health().
         "ai_backend": AI_BACKEND,
     }
+
+
+@app.get("/health")
+async def health():
+    """Non-sensitive readiness status for demo-day checks.
+
+    This endpoint reports whether each lazy model has been initialized; it
+    never triggers a download or model load by itself.
+    """
+    components = {"aasist": False, "ecapa": False, "whisper": False, "prosody": True}
+    if AI_BACKEND == "real":
+        try:
+            from app.services.ai_models import spoof_detector, speaker_verifier
+            from app.services import transcription_service
+            components.update({
+                "aasist": spoof_detector._detector is not None,
+                "ecapa": speaker_verifier._classifier is not None,
+                "whisper": transcription_service._whisper_model is not None,
+            })
+        except Exception:
+            components["prosody"] = False
+    else:
+        components.update({"aasist": None, "ecapa": None, "whisper": None})
+    return {"status": "ok", "ai_backend": AI_BACKEND, "components": components}
 
 
 app.include_router(enroll.router, tags=["enrollment"])

@@ -13,10 +13,16 @@ from app.services import ai_service
 from app.services import context_engine
 from app.services import risk_engine
 from app.services import transcription_service
+from app.services.prosody_analyzer import analyze_prosody
 from app.services.entity_extraction import extract_amount
 from app.services.urgency_detector import detect_urgency_detailed
 from app.services.ai_models.exceptions import AudioDecodeError
-from app.config import AI_BACKEND, URGENCY_RISK_MAP, KNOWN_CONTACT_SIMILARITY_THRESHOLD
+from app.config import (
+    AI_BACKEND,
+    KNOWN_CONTACT_SIMILARITY_THRESHOLD,
+    URGENCY_RISK_MAP,
+    VISL_RETAIN_RAW_AUDIO,
+)
 
 router = APIRouter()
 logger = logging.getLogger("visl.analyze")
@@ -137,22 +143,40 @@ async def analyze_call(
         if claimed_user_id is not None:
             speaker_similarity = ai_service.get_similarity(saved_path, claimed_user_id)
     except AudioDecodeError as exc:
+        _cleanup_analysis_audio(saved_path)
         raise HTTPException(
             status_code=400,
             detail=f"Could not process the uploaded audio: {exc}",
         )
     ai_elapsed_ms = (time.perf_counter() - ai_start) * 1000
 
-    # --- transcription + auto-extraction (Tasks 3, 4, 5) ---
+    # --- transcription, prosody, and auto-extraction ---
+    transcription_start = time.perf_counter()
     try:
         # Pass the ORIGINAL uploaded filename as the mock heuristic's hint
         # (not saved_path, whose UUID could otherwise confuse the mock's
         # digit-sequence detection — see transcription_service.py's
         # module docstring for the bug this fixes).
-        transcript = transcription_service.transcribe(saved_path, filename_hint=audio_file.filename)
+        transcription = transcription_service.transcribe_detailed(
+            saved_path, filename_hint=audio_file.filename
+        )
+        transcript = transcription.get("text") or ""
+        detected_language = transcription.get("language") or "und"
+        language_probability = transcription.get("language_probability")
     except Exception:  # noqa: BLE001 — transcription failure must not sink the whole analysis
         logger.exception("Transcription failed for %s; continuing without transcript", saved_path)
         transcript = None
+        detected_language = "und"
+        language_probability = None
+    transcription_elapsed_ms = (time.perf_counter() - transcription_start) * 1000
+
+    prosody_start = time.perf_counter()
+    try:
+        prosody = analyze_prosody(saved_path)
+    except Exception:  # noqa: BLE001 - optional evidence must not sink analysis
+        logger.exception("Prosody analysis failed for %s; continuing without prosody", saved_path)
+        prosody = {"prosody_score": None, "confidence": 0.0, "features": {}, "anomalies": []}
+    prosody_elapsed_ms = (time.perf_counter() - prosody_start) * 1000
 
     detected_amount = extract_amount(transcript) if transcript else None
     urgency_details = detect_urgency_detailed(transcript) if transcript else {
@@ -189,6 +213,8 @@ async def analyze_call(
         spoof_score=spoof_score,
         identity_mismatch_risk=identity_mismatch_risk,
         context_risk=context_risk,
+        prosody_risk=prosody.get("prosody_score") or 0.0,
+        prosody_confidence=prosody.get("confidence") or 0.0,
     )
     verdict = risk_engine.get_verdict(impersonation_risk)
 
@@ -210,13 +236,13 @@ async def analyze_call(
     total_elapsed_ms = (time.perf_counter() - pipeline_start) * 1000
     response.headers["X-Processing-Time-Ms"] = f"{total_elapsed_ms:.1f}"
     logger.info(
-        "analyze: backend=%s claimed_user_id=%s ai_ms=%.1f total_ms=%.1f verdict=%s "
+        "analyze: backend=%s claimed_user_id=%s ai_ms=%.1f whisper_ms=%.1f prosody_ms=%.1f total_ms=%.1f verdict=%s "
         "amount=%s urgency=%s known_contact=%s",
-        AI_BACKEND, claimed_user_id, ai_elapsed_ms, total_elapsed_ms, verdict,
+        AI_BACKEND, claimed_user_id, ai_elapsed_ms, transcription_elapsed_ms, prosody_elapsed_ms, total_elapsed_ms, verdict,
         final_transaction_value, final_urgency, known_contact,
     )
 
-    return AnalyzeResponse(
+    result = AnalyzeResponse(
         spoof_score=spoof_score,
         speaker_similarity=speaker_similarity,
         context_risk=context_risk,
@@ -229,4 +255,34 @@ async def analyze_call(
         urgency_keywords=urgency_details["matched_keywords"],
         known_contact=known_contact,
         call_id=call_id,
+        prosody_score=prosody.get("prosody_score"),
+        prosody_confidence=prosody.get("confidence"),
+        prosody_features=prosody.get("features") or {},
+        prosody_anomalies=prosody.get("anomalies") or [],
+        recommended_action=risk_engine.get_recommended_action(impersonation_risk),
+        risk_factors=risk_engine.explain_risk_factors(
+            spoof_score, identity_mismatch_risk, context_risk,
+            prosody.get("prosody_score"), final_urgency, final_transaction_value,
+        ),
+        detected_language=detected_language,
+        language_probability=language_probability,
+        processing_time_ms=round(total_elapsed_ms, 1),
     )
+    _cleanup_analysis_audio(saved_path)
+    return result
+
+
+def _cleanup_analysis_audio(path: str) -> None:
+    """Remove normalized call audio unless an operator explicitly retains it.
+
+    Enrollment recordings are intentionally handled separately because they
+    are needed to support the enrolled reference profile. Analysis audio is
+    not needed after model inference and result persistence.
+    """
+    if VISL_RETAIN_RAW_AUDIO:
+        return
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        logger.exception("Failed to remove temporary analysis audio %s", path)

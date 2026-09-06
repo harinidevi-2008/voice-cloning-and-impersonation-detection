@@ -7,6 +7,7 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
+.visl-venv/
 env/
 
 # Runtime data (regenerated automatically — never commit real enrollment data)

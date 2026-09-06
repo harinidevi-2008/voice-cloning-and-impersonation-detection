@@ -638,3 +638,29 @@ member2_backend/
 | End-to-end latency measurement | ✅ Done — `X-Processing-Time-Ms` header + server log line + dashboard display, verified live |
 | Verdict visibility ("unmistakable from across a room") | ✅ Done — large bordered color banner, verified via automated rendering test |
 | Demo audio, PPT, documentation, rehearsal | Out of scope for Member 2 — see Members 3 & 4 |
+
+## Final hackathon runbook
+
+The demo must run the real backend, not the deterministic mock backend:
+
+```powershell
+$env:VISL_AI_BACKEND="real"
+$env:VISL_TRANSCRIPTION_BACKEND="real"
+$env:VISL_WHISPER_MODEL_SIZE="small" # use tiny only when CPU/RAM is constrained
+$env:VISL_RETAIN_RAW_AUDIO="false"
+.\.venv\Scripts\python.exe run_dev.py
+```
+
+Architecture: audio is FFmpeg-normalized to mono 16 kHz WAV, then analysed
+by AASIST (spoof evidence), ECAPA-TDNN (claimed-speaker similarity),
+Faster-Whisper (transcript and language), prosody (supporting vocal/rhythm
+evidence), and context/risk fusion (security response). Scores are decision
+scores, not calibrated fraud probabilities.
+
+After a real sample analysis, check `GET /health`. The first real run may
+download ECAPA and the configured Whisper model, so complete it while the
+machine has internet access. For labelled validation, use:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\evaluate_audio_samples.py evaluation --csv results.csv
+```
