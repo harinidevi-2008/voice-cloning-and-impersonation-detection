@@ -9,7 +9,16 @@ meaningful number in the ORIGINAL uploaded filename.
 from app.services.transcription_service import transcribe
 
 
-def test_mock_transcribe_uses_filename_hint_not_converted_path():
+def _force_mock_transcription(monkeypatch):
+    """These tests cover deterministic mock behavior, never Whisper."""
+    import app.services.transcription_service as transcription_service
+
+    monkeypatch.setenv("VISL_TRANSCRIPTION_BACKEND", "mock")
+    monkeypatch.setattr(transcription_service, "TRANSCRIPTION_BACKEND", "mock")
+
+
+def test_mock_transcribe_uses_filename_hint_not_converted_path(monkeypatch):
+    _force_mock_transcription(monkeypatch)
     # Simulates exactly the bug scenario: a converted path whose UUID
     # segment contains a spurious 4+ digit run, alongside the correct
     # original filename passed as filename_hint.
@@ -22,13 +31,15 @@ def test_mock_transcribe_uses_filename_hint_not_converted_path():
     assert "5,859,205,294" not in transcript  # the bug's symptom
 
 
-def test_mock_transcribe_falls_back_to_audio_path_if_no_hint_given():
+def test_mock_transcribe_falls_back_to_audio_path_if_no_hint_given(monkeypatch):
+    _force_mock_transcription(monkeypatch)
     # Still works (just less reliably) if a caller doesn't pass a hint.
     transcript = transcribe("/data/audio_uploads/genuine_alice.wav")
     assert "fifty thousand" in transcript.lower() or "rupees" in transcript.lower()
 
 
-def test_mock_transcribe_urgency_flavors():
+def test_mock_transcribe_urgency_flavors(monkeypatch):
+    _force_mock_transcription(monkeypatch)
     high = transcribe("x.wav", filename_hint="urgent_call.wav")
     medium = transcribe("x.wav", filename_hint="clone_call.wav")
     low = transcribe("x.wav", filename_hint="genuine_call.wav")

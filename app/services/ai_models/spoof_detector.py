@@ -24,10 +24,10 @@ torch to be installed.
 import os
 import sys
 import torch
-import numpy as np
 
 from app.services.ai_models.preprocess import preprocess
 from app.services.ai_models.aasist_scoring import spoof_probability_from_logits
+from app.services.ai_models.aasist_input import prepare_aasist_waveform
 
 # ------------------------------------------------------------------
 # Add the cloned AASIST repository to Python path
@@ -49,7 +49,6 @@ D_ARGS = {
     "pool_ratios": [0.5, 0.7, 0.5, 0.5],
     "temperatures": [2.0, 2.0, 100.0, 100.0],
 }
-
 
 class SpoofDetector:
     def __init__(self):
@@ -74,6 +73,7 @@ class SpoofDetector:
     @torch.no_grad()
     def predict(self, audio_path: str):
         waveform, _ = preprocess(audio_path)
+        waveform = prepare_aasist_waveform(waveform)
 
         x = torch.tensor(waveform, dtype=torch.float32).unsqueeze(0).to(self.device)
 

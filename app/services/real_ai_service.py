@@ -66,3 +66,8 @@ def enroll_speaker_at(user_id: int, name: str, role: str, audio_path: str) -> in
     app/routers/enroll.py actually calls when AI_BACKEND=real.
     """
     return _speaker_verifier.enroll_speaker_with_id(user_id, name, role, audio_path)
+
+
+def delete_speaker_embedding(user_id: int) -> None:
+    """Remove a partially enrolled real-backend voiceprint during rollback."""
+    _speaker_verifier.delete_embedding(user_id)

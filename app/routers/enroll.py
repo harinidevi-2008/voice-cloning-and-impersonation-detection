@@ -76,13 +76,13 @@ async def enroll_user(
             # pseudo-id was never the source of truth — see mock_ai_service.py).
             mock_ai_service.enroll_speaker(name=name, role=role, audio_path=saved_path)
     except AudioDecodeError as exc:
-        _rollback(user_id, saved_path)
+        _rollback(user_id, saved_path, backend=AI_BACKEND)
         raise HTTPException(
             status_code=400,
             detail=f"Could not process the uploaded audio for enrollment: {exc}",
         )
     except Exception as exc:  # noqa: BLE001 — any AI-service failure must not leave a ghost user
-        _rollback(user_id, saved_path)
+        _rollback(user_id, saved_path, backend=AI_BACKEND)
         logger.exception("Enrollment failed for user_id=%s during voiceprint registration", user_id)
         raise HTTPException(
             status_code=500,
@@ -101,8 +101,17 @@ def _cleanup_file(path: str) -> None:
         logger.exception("Failed to remove temporary file %s", path)
 
 
-def _rollback(user_id: int, saved_path: str) -> None:
-    """Best-effort cleanup: delete the user row and the uploaded file."""
+def _rollback(user_id: int, saved_path: str, *, backend: str) -> None:
+    """Compensate an enrollment failure across both persistent stores/files."""
+    if backend == "real":
+        try:
+            # ECAPA writes to a separate SQLite database. It may have saved
+            # an embedding immediately before a later enrollment failure, so
+            # remove it independently of the application-user row below.
+            real_ai_service.delete_speaker_embedding(user_id)
+        except Exception:  # noqa: BLE001 — continue with all other cleanup
+            logger.exception("Failed to remove embedding for user_id=%s during rollback", user_id)
+
     try:
         crud.delete_user(user_id)
     except Exception:  # noqa: BLE001 — rollback must never mask the original error

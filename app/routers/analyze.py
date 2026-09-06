@@ -119,14 +119,19 @@ async def analyze_call(
             )
 
     # --- save + normalize audio ---
+    logger.info("analyze stage=audio_conversion start filename=%s", audio_file.filename)
     raw_path = save_upload_file(audio_file, prefix="analyze")
     try:
         saved_path = convert_to_standard_wav(raw_path)
     except AudioDecodeError as exc:
+        logger.warning("analyze stage=audio_conversion invalid_audio: %s", exc)
         raise HTTPException(
             status_code=400,
-            detail=f"Could not process the uploaded audio: {exc}",
+            detail=f"Audio conversion failed: {exc}",
         )
+    except Exception:
+        logger.exception("analyze stage=audio_conversion unexpected_failure")
+        raise HTTPException(status_code=500, detail="Audio conversion failed unexpectedly.")
     finally:
         if os.path.exists(raw_path):
             try:
@@ -134,24 +139,44 @@ async def analyze_call(
             except OSError:
                 logger.exception("Failed to remove pre-conversion upload %s", raw_path)
 
-    # --- Member 1 interface calls (mock or real, per AI_BACKEND) ---
+    # --- Required model stages (mock or real, per AI_BACKEND) ---
     ai_start = time.perf_counter()
+    logger.info("analyze stage=aasist start backend=%s", AI_BACKEND)
     try:
         spoof_score = ai_service.get_spoof_score(saved_path)
-
-        speaker_similarity = None
-        if claimed_user_id is not None:
-            speaker_similarity = ai_service.get_similarity(saved_path, claimed_user_id)
     except AudioDecodeError as exc:
         _cleanup_analysis_audio(saved_path)
+        logger.warning("analyze stage=aasist invalid_audio: %s", exc)
         raise HTTPException(
             status_code=400,
-            detail=f"Could not process the uploaded audio: {exc}",
+            detail=f"Audio preprocessing failed before AASIST spoof detection: {exc}",
         )
+    except Exception:
+        _cleanup_analysis_audio(saved_path)
+        logger.exception("analyze stage=aasist unexpected_failure")
+        raise HTTPException(status_code=500, detail="AASIST spoof detection failed unexpectedly.")
+
+    speaker_similarity = None
+    if claimed_user_id is not None:
+        logger.info("analyze stage=ecapa start user_id=%s", claimed_user_id)
+        try:
+            speaker_similarity = ai_service.get_similarity(saved_path, claimed_user_id)
+        except AudioDecodeError as exc:
+            _cleanup_analysis_audio(saved_path)
+            logger.warning("analyze stage=ecapa invalid_audio: %s", exc)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audio preprocessing failed before ECAPA speaker verification: {exc}",
+            )
+        except Exception:
+            _cleanup_analysis_audio(saved_path)
+            logger.exception("analyze stage=ecapa unexpected_failure user_id=%s", claimed_user_id)
+            raise HTTPException(status_code=500, detail="ECAPA speaker verification failed unexpectedly.")
     ai_elapsed_ms = (time.perf_counter() - ai_start) * 1000
 
     # --- transcription, prosody, and auto-extraction ---
     transcription_start = time.perf_counter()
+    logger.info("analyze stage=transcription start")
     try:
         # Pass the ORIGINAL uploaded filename as the mock heuristic's hint
         # (not saved_path, whose UUID could otherwise confuse the mock's
@@ -164,17 +189,18 @@ async def analyze_call(
         detected_language = transcription.get("language") or "und"
         language_probability = transcription.get("language_probability")
     except Exception:  # noqa: BLE001 — transcription failure must not sink the whole analysis
-        logger.exception("Transcription failed for %s; continuing without transcript", saved_path)
+        logger.exception("analyze stage=transcription failed; continuing without transcript path=%s", saved_path)
         transcript = None
         detected_language = "und"
         language_probability = None
     transcription_elapsed_ms = (time.perf_counter() - transcription_start) * 1000
 
     prosody_start = time.perf_counter()
+    logger.info("analyze stage=prosody start")
     try:
         prosody = analyze_prosody(saved_path)
     except Exception:  # noqa: BLE001 - optional evidence must not sink analysis
-        logger.exception("Prosody analysis failed for %s; continuing without prosody", saved_path)
+        logger.exception("analyze stage=prosody failed; continuing without prosody path=%s", saved_path)
         prosody = {"prosody_score": None, "confidence": 0.0, "features": {}, "anomalies": []}
     prosody_elapsed_ms = (time.perf_counter() - prosody_start) * 1000
 
@@ -199,24 +225,28 @@ async def analyze_call(
     final_transaction_value = transaction_value if transaction_value is not None else (detected_amount or 0.0)
     final_urgency = urgency.strip().lower() if urgency is not None else detected_urgency
 
-    # --- context risk ---
-    context_result = context_engine.compute_context_risk(
-        caller_known=known_contact,
-        transaction_value=final_transaction_value,
-        urgency=final_urgency,
-    )
-    context_risk = context_result["context_risk"]
-
-    # --- fusion ---
-    identity_mismatch_risk = risk_engine.compute_identity_mismatch_risk(speaker_similarity)
-    impersonation_risk = risk_engine.compute_impersonation_risk(
-        spoof_score=spoof_score,
-        identity_mismatch_risk=identity_mismatch_risk,
-        context_risk=context_risk,
-        prosody_risk=prosody.get("prosody_score") or 0.0,
-        prosody_confidence=prosody.get("confidence") or 0.0,
-    )
-    verdict = risk_engine.get_verdict(impersonation_risk)
+    # --- context risk + fusion ---
+    logger.info("analyze stage=context_risk_fusion start")
+    try:
+        context_result = context_engine.compute_context_risk(
+            caller_known=known_contact,
+            transaction_value=final_transaction_value,
+            urgency=final_urgency,
+        )
+        context_risk = context_result["context_risk"]
+        identity_mismatch_risk = risk_engine.compute_identity_mismatch_risk(speaker_similarity)
+        impersonation_risk = risk_engine.compute_impersonation_risk(
+            spoof_score=spoof_score,
+            identity_mismatch_risk=identity_mismatch_risk,
+            context_risk=context_risk,
+            prosody_risk=prosody.get("prosody_score") or 0.0,
+            prosody_confidence=prosody.get("confidence") or 0.0,
+        )
+        verdict = risk_engine.get_verdict(impersonation_risk)
+    except Exception:
+        _cleanup_analysis_audio(saved_path)
+        logger.exception("analyze stage=context_risk_fusion unexpected_failure")
+        raise HTTPException(status_code=500, detail="Context and risk analysis failed unexpectedly.")
 
     # --- persist to call_logs (Task 6) ---
     try:
@@ -228,6 +258,7 @@ async def analyze_call(
             urgency=final_urgency,
             risk=verdict,
             speaker_name=(claimed_user["name"] if claimed_user else None),
+            speaker_user_id=claimed_user_id,
         )
     except Exception:  # noqa: BLE001 — logging failure must not sink the analysis result
         logger.exception("Failed to persist call record to analysis.db")

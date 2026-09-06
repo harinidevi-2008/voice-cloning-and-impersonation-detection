@@ -53,7 +53,11 @@ def test_prosody_analysis_handles_silence_without_crashing():
     assert features["prosody_score"] in (None, 0.0)
 
 
-def test_transcription_detailed_response_is_structured_in_mock_mode():
+def test_transcription_detailed_response_is_structured_in_mock_mode(monkeypatch):
+    import app.services.transcription_service as transcription_service
+
+    monkeypatch.setenv("VISL_TRANSCRIPTION_BACKEND", "mock")
+    monkeypatch.setattr(transcription_service, "TRANSCRIPTION_BACKEND", "mock")
     result = transcribe_detailed("unused.wav", filename_hint="urgent_50000.wav")
     assert set(result) >= {"text", "language", "language_probability"}
     assert result["language"] == "en"

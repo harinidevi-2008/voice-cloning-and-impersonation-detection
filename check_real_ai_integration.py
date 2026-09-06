@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Force real backend for this script regardless of the environment's
 # current VISL_AI_BACKEND setting.
 os.environ["VISL_AI_BACKEND"] = "real"
+os.environ["VISL_TRANSCRIPTION_BACKEND"] = "real"
 
 
 def main():
@@ -42,11 +43,11 @@ def main():
 
     print(f"Using audio file: {audio_path}\n")
 
-    print("[1/4] Loading real_ai_service (this loads AASIST + downloads/loads")
+    print("[1/6] Loading real_ai_service (this loads AASIST + downloads/loads")
     print("      ECAPA-TDNN on first run — may take a minute)...")
     from app.services import real_ai_service
 
-    print("\n[2/4] Enrolling a test speaker at user_id=999 (enroll_speaker_at,")
+    print("\n[2/6] Enrolling a test speaker at user_id=999 (enroll_speaker_at,")
     print("      the same function app/routers/enroll.py calls)...")
     returned_id = real_ai_service.enroll_speaker_at(
         user_id=999, name="Integration Test User", role="test", audio_path=audio_path
@@ -54,7 +55,7 @@ def main():
     assert returned_id == 999, f"expected 999 back, got {returned_id}"
     print(f"      OK — embedding stored at user_id={returned_id}")
 
-    print("\n[3/4] Checking get_similarity() finds that exact embedding again")
+    print("\n[3/6] Checking get_similarity() finds that exact embedding again")
     print("      (this is the ID-sync fix — would fail before it)...")
     similarity = real_ai_service.get_similarity(audio_path, 999)
     print(f"      Similarity of the SAME audio to itself: {similarity:.4f}")
@@ -63,9 +64,26 @@ def main():
     else:
         print("      OK — high self-similarity, as expected.")
 
-    print("\n[4/4] Running real spoof detection (AASIST)...")
+    print("\n[4/6] Running real spoof detection (AASIST)...")
     spoof_score = real_ai_service.get_spoof_score(audio_path)
     print(f"      Spoof score: {spoof_score:.4f}  (0 = likely genuine, 1 = likely AI-generated)")
+
+    print("\n[5/6] Running real transcription (Faster-Whisper)...")
+    from app.services.transcription_service import transcribe_detailed
+    transcription = transcribe_detailed(audio_path)
+    print(
+        "      Language: "
+        f"{transcription['language']} ({transcription['language_probability']:.3f}); "
+        f"transcript: {transcription['text']!r}"
+    )
+
+    print("\n[6/6] Running prosody analysis...")
+    from app.services.prosody_analyzer import analyze_prosody
+    prosody = analyze_prosody(audio_path)
+    print(
+        f"      Status: {prosody['status']}; "
+        f"score: {prosody['prosody_score']}; confidence: {prosody['confidence']}"
+    )
 
     print("\n" + "=" * 60)
     print("INTEGRATION TEST PASSED")

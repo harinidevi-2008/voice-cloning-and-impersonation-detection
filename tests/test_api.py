@@ -1,6 +1,9 @@
 import io
 import os
 import sys
+import uuid
+
+import pytest
 
 # Ensure tests can run isolated against a scratch DB/audio dir.
 os.environ.setdefault("PYTHONPATH", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -11,6 +14,23 @@ from app.db.database import init_db
 from app.db import analysis_db
 from app.config import AI_BACKEND, AUDIO_UPLOAD_DIR
 from app.services.ai_models.exceptions import AudioDecodeError
+
+
+@pytest.fixture(autouse=True)
+def _isolate_api_contract_tests_to_mock_backends(monkeypatch):
+    """Keep API contract tests independent of the caller's backend env vars."""
+    from app.routers import enroll as enroll_router
+    from app.services import ai_service, mock_ai_service, transcription_service
+
+    monkeypatch.setenv("VISL_AI_BACKEND", "mock")
+    monkeypatch.setenv("VISL_TRANSCRIPTION_BACKEND", "mock")
+    # These modules select their implementation at import time. Patch their
+    # already-imported router/service dependencies for this test only; pytest
+    # restores every value after the test and never changes the shell env.
+    monkeypatch.setattr(enroll_router, "AI_BACKEND", "mock")
+    monkeypatch.setattr(ai_service, "get_spoof_score", mock_ai_service.get_spoof_score)
+    monkeypatch.setattr(ai_service, "get_similarity", mock_ai_service.get_similarity)
+    monkeypatch.setattr(transcription_service, "TRANSCRIPTION_BACKEND", "mock")
 
 # TestClient's plain instantiation doesn't reliably fire FastAPI's startup
 # event across versions, so make sure both DB schemas exist before any test
@@ -195,14 +215,15 @@ def test_enrollment_rolls_back_on_ai_service_failure(monkeypatch):
     files_before = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
     users_before = client.get("/users").json()
 
+    name = f"Ghost User {uuid.uuid4().hex}"
     files = {"audio_file": ("genuine_ghost.wav", io.BytesIO(_fake_wav_bytes()), "audio/wav")}
-    data = {"name": "Ghost User", "role": "customer"}
+    data = {"name": name, "role": "customer"}
     resp = client.post("/enroll", data=data, files=files)
 
     assert resp.status_code == 500
 
     users_after = client.get("/users").json()
-    assert not any(u["name"] == "Ghost User" for u in users_after), (
+    assert not any(u["name"] == name for u in users_after), (
         "Ghost user found in database after a simulated enrollment failure — rollback did not work"
     )
     assert len(users_after) == len(users_before), "User count changed despite the enrollment failing"
@@ -227,16 +248,17 @@ def test_enrollment_returns_400_not_500_for_audio_decode_error(monkeypatch):
 
     monkeypatch.setattr(mock_ai_service, "enroll_speaker", _bad_audio)
 
+    name = f"Corrupt Audio User {uuid.uuid4().hex}"
     users_before = client.get("/users").json()
     files = {"audio_file": ("genuine_corrupt.wav", io.BytesIO(_fake_wav_bytes()), "audio/wav")}
-    data = {"name": "Corrupt Audio User", "role": "customer"}
+    data = {"name": name, "role": "customer"}
     resp = client.post("/enroll", data=data, files=files)
 
     assert resp.status_code == 400
     assert "audio" in resp.json()["detail"].lower()
 
     users_after = client.get("/users").json()
-    assert not any(u["name"] == "Corrupt Audio User" for u in users_after), (
+    assert not any(u["name"] == name for u in users_after), (
         "Ghost user found after a simulated AudioDecodeError — rollback did not work"
     )
 
@@ -256,3 +278,17 @@ def test_analyze_returns_400_not_500_for_audio_decode_error(monkeypatch):
 
     assert resp.status_code == 400
     assert "audio" in resp.json()["detail"].lower()
+
+
+def test_analyze_reports_the_aasist_stage_for_unexpected_model_failures(monkeypatch):
+    import app.services.ai_service as ai_service
+
+    def _boom(audio_path):
+        raise RuntimeError("simulated AASIST failure")
+
+    monkeypatch.setattr(ai_service, "get_spoof_score", _boom)
+    files = {"audio_file": ("genuine_model_error.wav", io.BytesIO(_fake_wav_bytes()), "audio/wav")}
+    resp = client.post("/analyze", data={}, files=files)
+
+    assert resp.status_code == 500
+    assert "aasist" in resp.json()["detail"].lower()

@@ -74,6 +74,15 @@ def _migrate_legacy_table(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE analysis")
 
 
+def _ensure_call_logs_columns(conn: sqlite3.Connection) -> None:
+    """Apply additive schema migrations without discarding saved history."""
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(call_logs)").fetchall()
+    }
+    if "speaker_user_id" not in columns:
+        conn.execute("ALTER TABLE call_logs ADD COLUMN speaker_user_id INTEGER")
+
+
 def init_db() -> None:
     conn = get_connection()
     try:
@@ -92,6 +101,7 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_call_logs_columns(conn)
         _migrate_legacy_table(conn)
         conn.commit()
     finally:
@@ -106,6 +116,7 @@ def save_analysis(
     urgency: str,
     risk: str,
     speaker_name: Optional[str] = None,
+    speaker_user_id: Optional[int] = None,
 ) -> str:
     """Inserts a new call record and returns its generated call_id."""
     call_id = uuid.uuid4().hex
@@ -114,13 +125,14 @@ def save_analysis(
         conn.execute(
             """
             INSERT INTO call_logs
-                (call_id, timestamp, speaker_name, transcript, amount, urgency, spoof_score, similarity, risk)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (call_id, timestamp, speaker_name, speaker_user_id, transcript, amount, urgency, spoof_score, similarity, risk)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 call_id,
                 datetime.now(timezone.utc).isoformat(),
                 speaker_name,
+                speaker_user_id,
                 transcript,
                 amount,
                 urgency,
