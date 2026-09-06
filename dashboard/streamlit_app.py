@@ -34,7 +34,7 @@ from streamlit_mic_recorder import mic_recorder
 # Config
 # ---------------------------------------------------------------------------
 DEFAULT_API_BASE_URL = os.environ.get("VISL_API_BASE_URL", "http://127.0.0.1:8000")
-REQUEST_TIMEOUT_SECS = 30  # transcription can take a few seconds longer than a bare API call
+REQUEST_TIMEOUT_SECS = 120  # bounded allowance for local CPU real-model inference
 ALLOWED_AUDIO_TYPES = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "mp4"]
 
 # ---------------------------------------------------------------------------
@@ -82,11 +82,6 @@ def get_risk_tier(score: float):
 # ---------------------------------------------------------------------------
 def api_base_url() -> str:
     return st.session_state.get("api_base_url", DEFAULT_API_BASE_URL)
-
-
-def request_dashboard_refresh() -> None:
-    """Explicit refresh callback used by the three dashboard data views."""
-    st.session_state["_dashboard_refresh_at"] = time.time()
 
 
 def check_backend_health():
@@ -225,12 +220,10 @@ def audio_input_widget(key_prefix: str):
     """
     Renders an Upload File / Speak Now toggle.
 
-    Returns a tuple (bytes, filename, content_type, is_fresh_recording) or
-    None if no audio is available yet. is_fresh_recording is True only on
-    the exact script run where a NEW recording just finished -- callers use
-    this to auto-trigger analysis immediately on stop (Task 2: "Automatically
-    send it to FastAPI for analysis"), without needing a separate submit
-    click, while still requiring an explicit submit for uploaded files.
+    Returns (bytes, filename, content_type), or None if no audio is
+    available. A browser recording is kept in Streamlit session state so
+    stopping the microphone never submits it; the caller explicitly decides
+    when to send it to the backend.
     """
     mode = st.radio(
         "Audio input method",
@@ -250,7 +243,14 @@ def audio_input_widget(key_prefix: str):
             key=f"{key_prefix}_mic",
         )
         if audio is not None:
-            st.success("Recording captured -- sending for analysis...")
+            st.session_state[f"{key_prefix}_recorded_audio"] = (
+                audio["bytes"],
+                f"recording_{int(time.time())}.{audio['format']}",
+                f"audio/{audio['format']}",
+            )
+        recording = st.session_state.get(f"{key_prefix}_recorded_audio")
+        if recording is not None:
+            st.success("Recording captured. Ready when you are.")
             # Task 1: "recording_<timestamp>" naming pattern. Extension
             # matches the ACTUAL encoding the browser produced (webm/Opus —
             # browsers' native MediaRecorder API doesn't produce wav
@@ -258,9 +258,7 @@ def audio_input_widget(key_prefix: str):
             # (app/services/audio_conversion.py) still normalizes it to
             # mono 16kHz PCM WAV before any model sees it, same as any
             # other uploaded format.
-            timestamp = int(time.time())
-            filename = f"recording_{timestamp}.{audio['format']}"
-            return audio["bytes"], filename, f"audio/{audio['format']}", True
+            return recording
         return None
 
     uploaded = st.file_uploader(
@@ -269,7 +267,7 @@ def audio_input_widget(key_prefix: str):
         key=f"{key_prefix}_uploader",
     )
     if uploaded is not None:
-        return uploaded.getvalue(), uploaded.name, uploaded.type or "audio/wav", False
+        return uploaded.getvalue(), uploaded.name, uploaded.type or "audio/wav"
     return None
 
 
@@ -616,8 +614,6 @@ def render_backend_monitor():
     else:
         st.error("🔴 Backend Offline")
         st.caption(health_msg)
-        if st.button("Retry", key="backend_health_retry", use_container_width=True):
-            st.rerun(scope="fragment")
 
 
 # ---------------------------------------------------------------------------
@@ -663,10 +659,9 @@ with tab_enroll:
         st.markdown("**Reference voice sample**")
         enroll_audio = audio_input_widget("enroll")
 
-        is_fresh_recording = bool(enroll_audio) and len(enroll_audio) == 4 and enroll_audio[3]
         manual_submit = st.button("Enroll Speaker", use_container_width=True, key="enroll_submit_btn")
 
-        if is_fresh_recording or manual_submit:
+        if manual_submit:
             if not name.strip():
                 st.error("Please enter a name.")
             elif not role.strip():
@@ -674,7 +669,7 @@ with tab_enroll:
             elif enroll_audio is None:
                 st.error("Please upload or record a voice sample.")
             else:
-                audio_bytes, filename, content_type, _ = enroll_audio
+                audio_bytes, filename, content_type = enroll_audio
                 with st.spinner("Enrolling speaker..."):
                     result, error = enroll_speaker(
                         name.strip(), role.strip(), audio_bytes, filename, content_type
@@ -744,14 +739,13 @@ with tab_analyze:
     st.markdown("**Call audio sample**")
     analyze_audio = audio_input_widget("analyze")
 
-    is_fresh_recording = bool(analyze_audio) and len(analyze_audio) == 4 and analyze_audio[3]
     manual_submit = st.button("Analyze Call", use_container_width=True, key="analyze_submit_btn")
 
-    if is_fresh_recording or manual_submit:
+    if manual_submit:
         if analyze_audio is None:
             st.error("Please upload or record the call's audio sample.")
         else:
-            audio_bytes, filename, content_type, _ = analyze_audio
+            audio_bytes, filename, content_type = analyze_audio
             claimed_user_id = None
             if claimed_choice != UNKNOWN_OPTION:
                 claimed_user_id = int(claimed_choice.split(" -- ")[0])
@@ -934,7 +928,7 @@ with tab_recent:
     filter_left, filter_middle, filter_right = st.columns([2, 1, 0.7])
     with filter_left:
         speaker_query = st.text_input(
-            "Search by speaker", placeholder="Type a speaker name", key="recent_speaker_search"
+            "Search by speaker or user ID", placeholder="Type a speaker name or user ID", key="recent_speaker_search"
         )
     with filter_middle:
         risk_filter = st.selectbox(
@@ -947,7 +941,11 @@ with tab_recent:
         normalized_query = speaker_query.strip().casefold()
         filtered_recent = [
             entry for entry in (recent or [])
-            if (not normalized_query or normalized_query in (entry.get("speaker_name") or "").casefold())
+            if (
+                not normalized_query
+                or normalized_query in (entry.get("speaker_name") or "").casefold()
+                or normalized_query == str(entry.get("speaker_user_id") or "")
+            )
             and (risk_filter == "All" or (entry.get("risk") or "").upper() == risk_filter)
         ]
 

@@ -11,6 +11,7 @@ class CallLogOut(BaseModel):
     call_id: str
     timestamp: str
     speaker_name: Optional[str] = None
+    speaker_user_id: Optional[int] = None
     transcript: Optional[str] = None
     amount: Optional[float] = None
     urgency: Optional[str] = None

@@ -23,6 +23,12 @@ class AudioDecodeError(Exception):
     pass
 
 
+class AudioTooShortError(ValueError):
+    """Raised when decoded audio is too short for reliable analysis."""
+
+    pass
+
+
 class SpeakerEmbeddingMissingError(Exception):
     """Raised when an enrolled profile has no usable ECAPA voice embedding."""
 

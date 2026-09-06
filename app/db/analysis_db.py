@@ -92,6 +92,9 @@ def init_db() -> None:
             )
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(call_logs)")}
+        if "speaker_user_id" not in columns:
+            conn.execute("ALTER TABLE call_logs ADD COLUMN speaker_user_id INTEGER NULL")
         _migrate_legacy_table(conn)
         conn.commit()
     finally:
@@ -106,6 +109,7 @@ def save_analysis(
     urgency: str,
     risk: str,
     speaker_name: Optional[str] = None,
+    speaker_user_id: Optional[int] = None,
 ) -> str:
     """Inserts a new call record and returns its generated call_id."""
     call_id = uuid.uuid4().hex
@@ -114,13 +118,14 @@ def save_analysis(
         conn.execute(
             """
             INSERT INTO call_logs
-                (call_id, timestamp, speaker_name, transcript, amount, urgency, spoof_score, similarity, risk)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (call_id, timestamp, speaker_name, speaker_user_id, transcript, amount, urgency, spoof_score, similarity, risk)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 call_id,
                 datetime.now(timezone.utc).isoformat(),
                 speaker_name,
+                speaker_user_id,
                 transcript,
                 amount,
                 urgency,

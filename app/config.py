@@ -104,7 +104,17 @@ AI_BACKEND = os.environ.get("VISL_AI_BACKEND", "mock").strip().lower()
 #         the rest of the mock stack), so the whole pipeline is testable
 #         and demoable without downloading a transcription model.
 TRANSCRIPTION_BACKEND = os.environ.get("VISL_TRANSCRIPTION_BACKEND", AI_BACKEND).strip().lower()
-WHISPER_MODEL_SIZE = os.environ.get("VISL_WHISPER_MODEL_SIZE", "tiny")
+# Keep the historic VISL-prefixed setting, and also support the documented
+# WHISPER_MODEL_SIZE command-line setting used for the real demo.
+WHISPER_MODEL_SIZE = os.environ.get(
+    "WHISPER_MODEL_SIZE", os.environ.get("VISL_WHISPER_MODEL_SIZE", "tiny")
+)
+
+# Raw analysis uploads are transient by default.  Enrollment samples remain
+# associated with their enrolled profile; this switch concerns call analysis.
+RETAIN_RAW_AUDIO = os.environ.get("VISL_RETAIN_RAW_AUDIO", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 # Speaker similarity at/above this is treated as "recognized speaker" ->
 # caller_known=True, when not explicitly provided (Task 5: automatic known-

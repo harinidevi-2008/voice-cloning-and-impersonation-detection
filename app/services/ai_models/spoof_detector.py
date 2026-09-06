@@ -26,7 +26,7 @@ import sys
 import torch
 import numpy as np
 
-from app.services.ai_models.preprocess import preprocess
+from app.services.ai_models.preprocess import prepare_aasist_waveform
 from app.services.ai_models.aasist_scoring import (
     spoof_label_from_score,
     spoof_probability_from_logits,
@@ -76,7 +76,7 @@ class SpoofDetector:
 
     @torch.no_grad()
     def predict(self, audio_path: str):
-        waveform, _ = preprocess(audio_path)
+        waveform = prepare_aasist_waveform(audio_path)
 
         x = torch.tensor(waveform, dtype=torch.float32).unsqueeze(0).to(self.device)
 

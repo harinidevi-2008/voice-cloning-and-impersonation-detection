@@ -3,10 +3,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import AI_BACKEND, CORS_ALLOW_ORIGINS, DEVELOPMENT_RESET_ON_STARTUP
+from app.config import AI_BACKEND, CORS_ALLOW_ORIGINS
 from app.db.database import init_db
 from app.db import analysis_db, crud
-from app.db.development_reset import reset_development_data
 from app.services.ai_models.embedding_store import has_valid_embedding, init_db as init_embedding_db
 from app.routers import enroll, users, analyze, analysis
 
@@ -26,11 +25,6 @@ async def lifespan(app: FastAPI):
     init_db()
     init_embedding_db()
     analysis_db.init_db()
-    if DEVELOPMENT_RESET_ON_STARTUP:
-        reset_development_data()
-        logging.getLogger("visl.startup").info("Development runtime data reset complete.")
-        yield
-        return
     # Legacy profiles may predate voiceprint persistence. Keep them in the
     # database for audit/history, but never expose them as verifiable.
     for user in crud.list_users():
