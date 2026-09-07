@@ -14,7 +14,8 @@ from app.services import context_engine
 from app.services import risk_engine
 from app.services import transcription_service
 from app.services import prosody_analyzer
-from app.services.entity_extraction import extract_amount
+from app.services.preventive_actions import generate_preventive_actions
+from app.services.financial_entity_extractor import amount_to_inr, extract_financial_entities
 from app.services.urgency_detector import detect_urgency_detailed
 from app.services.ai_models.exceptions import (
     AudioDecodeError,
@@ -168,7 +169,8 @@ async def analyze_call(
     # --- Member 1 interface calls (mock or real, per AI_BACKEND) ---
     ai_start = time.perf_counter()
     try:
-        spoof_score = ai_service.get_spoof_score(saved_path)
+        spoof_assessment = ai_service.get_spoof_assessment(saved_path)
+        spoof_score = float(spoof_assessment["spoof_score"])
     except AudioTooShortError as exc:
         _discard_analysis_audio(saved_path)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -212,7 +214,9 @@ async def analyze_call(
     if not transcript or not transcript.strip():
         transcript = None
 
-    detected_amount = extract_amount(transcript) if transcript else None
+    financial_entities = extract_financial_entities(transcript)
+    primary_amount = financial_entities["primary"]
+    detected_amount = primary_amount["amount"] if primary_amount else None
     urgency_details = detect_urgency_detailed(transcript) if transcript else {
         "urgency": "low", "confidence": 0.4, "matched_keywords": [],
     }
@@ -236,7 +240,12 @@ async def analyze_call(
     else:
         known_contact = False
 
-    final_transaction_value = transaction_value if transaction_value is not None else detected_amount
+    # Apply INR thresholds only to INR or an explicitly configured FX basis;
+    # unknown/unconfigured currencies contribute no false monetary risk.
+    risk_amount = amount_to_inr(
+        detected_amount, primary_amount["currency"] if primary_amount else None
+    )
+    final_transaction_value = transaction_value if transaction_value is not None else risk_amount
     final_urgency = urgency.strip().lower() if urgency is not None else detected_urgency
 
     # --- context risk ---
@@ -265,17 +274,27 @@ async def analyze_call(
         _discard_analysis_audio(saved_path)
         raise _stage_error("Context/risk fusion", exc) from exc
 
+    preventive_actions = generate_preventive_actions(
+        verdict=verdict,
+        spoof_score=spoof_score,
+        amount=final_transaction_value,
+        urgency=final_urgency,
+    )
+
     # --- persist to call_logs (Task 6) ---
     try:
         call_id = analysis_db.save_analysis(
             transcript=transcript,
             spoof_score=spoof_score,
             similarity=speaker_similarity,
-            amount=final_transaction_value,
+            amount=detected_amount,
             urgency=final_urgency,
             risk=verdict,
             speaker_name=(claimed_user["name"] if claimed_user else None),
             speaker_user_id=claimed_user_id,
+            preventive_actions=preventive_actions,
+            currency=primary_amount["currency"] if primary_amount else None,
+            display_amount=primary_amount["display_amount"] if primary_amount else None,
         )
     except Exception as exc:  # noqa: BLE001
         _discard_analysis_audio(saved_path)
@@ -285,9 +304,12 @@ async def analyze_call(
     response.headers["X-Processing-Time-Ms"] = f"{total_elapsed_ms:.1f}"
     logger.info(
         "analyze: backend=%s claimed_user_id=%s speaker_found=%s embedding_loaded=%s "
-        "similarity=%s spoof_score=%.4f final_risk=%.4f verdict=%s amount=%s urgency=%s",
+        "similarity=%s raw_spoof_evidence=%s logits=(%s,%s) duration=%s "
+        "spoof_score=%.4f final_risk=%.4f verdict=%s amount=%s urgency=%s",
         AI_BACKEND, claimed_user_id, claimed_user is not None,
-        speaker_similarity is not None, speaker_similarity, spoof_score,
+        speaker_similarity is not None, speaker_similarity,
+        spoof_assessment.get("raw_spoof_evidence"), spoof_assessment.get("logit_spoof"),
+        spoof_assessment.get("logit_bonafide"), spoof_assessment.get("normalized_duration_seconds"), spoof_score,
         impersonation_risk, verdict, final_transaction_value, final_urgency,
     )
 
@@ -299,6 +321,12 @@ async def analyze_call(
         verdict=verdict,
         transcript=transcript,
         detected_amount=detected_amount,
+        detected_currency=primary_amount["currency"] if primary_amount else None,
+        currency_symbol=primary_amount["currency_symbol"] if primary_amount else None,
+        display_amount=primary_amount["display_amount"] if primary_amount else None,
+        amount_confidence=primary_amount["confidence"] if primary_amount else None,
+        amount_source_text=primary_amount["source_text"] if primary_amount else None,
+        detected_duration=financial_entities["durations"][0] if financial_entities["durations"] else None,
         detected_urgency=detected_urgency,
         urgency_confidence=urgency_details["confidence"],
         urgency_keywords=urgency_details["matched_keywords"],
@@ -308,9 +336,14 @@ async def analyze_call(
         spoof_label=risk_engine.classify_spoof_score(spoof_score),
         detected_language=transcription.get("detected_language"),
         language_probability=transcription.get("language_probability"),
+        selected_language=transcription.get("selected_language"),
+        language_detection_method=transcription.get("language_detection_method"),
+        transcription_model=transcription.get("model_size"),
+        transcription_segments=transcription.get("segments") or [],
         prosody_risk=prosody["prosody_risk"],
         prosody_confidence=prosody["confidence"],
         recommended_action=risk_engine.get_recommended_action(impersonation_risk),
+        preventive_actions=preventive_actions,
         call_id=call_id,
     )
     _discard_analysis_audio(saved_path)

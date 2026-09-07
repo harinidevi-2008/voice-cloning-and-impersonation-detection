@@ -15,6 +15,13 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # member
 DATA_DIR = os.path.join(BASE_DIR, "data")
 AUDIO_UPLOAD_DIR = os.path.join(DATA_DIR, "audio_uploads")
 DB_PATH = os.path.join(DATA_DIR, "voice_integrity.db")
+# The encryption key itself is deliberately read at use time by
+# embedding_store.py, never cached here or written to a database. For a
+# production deployment, use an institutional secrets manager, KMS, or HSM.
+EMBEDDING_DB_PATH = os.environ.get(
+    "VISL_EMBEDDING_DB_PATH", os.path.join(DATA_DIR, "voice_embeddings.db")
+)
+EMBEDDING_ENCRYPTION_KEY_ENV = "VISL_EMBEDDING_ENCRYPTION_KEY"
 
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".mp4", ".webm"}
 # .webm added: browsers' native MediaRecorder API (used by the dashboard's
@@ -107,11 +114,30 @@ AI_BACKEND = os.environ.get("VISL_AI_BACKEND", "mock").strip().lower()
 #         the rest of the mock stack), so the whole pipeline is testable
 #         and demoable without downloading a transcription model.
 TRANSCRIPTION_BACKEND = os.environ.get("VISL_TRANSCRIPTION_BACKEND", AI_BACKEND).strip().lower()
-# Keep the historic VISL-prefixed setting, and also support the documented
-# WHISPER_MODEL_SIZE command-line setting used for the real demo.
+# VISL_WHISPER_MODEL_SIZE is the documented deployment setting; retain the
+# unprefixed form for older launch scripts.
 WHISPER_MODEL_SIZE = os.environ.get(
-    "WHISPER_MODEL_SIZE", os.environ.get("VISL_WHISPER_MODEL_SIZE", "tiny")
+    "VISL_WHISPER_MODEL_SIZE", os.environ.get("WHISPER_MODEL_SIZE", "small")
 )
+WHISPER_BEAM_SIZE = int(os.environ.get("VISL_WHISPER_BEAM_SIZE", "5"))
+WHISPER_VAD_FILTER = os.environ.get("VISL_WHISPER_VAD_FILTER", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+# Automatic Whisper language identification is normally reliable, but short
+# Indian-language speech can be confused with a neighbouring language. Only
+# uncertain/unsupported results are re-evaluated with these supported hints.
+WHISPER_LANGUAGE_CONFIDENCE_THRESHOLD = float(
+    os.environ.get("VISL_WHISPER_LANGUAGE_CONFIDENCE_THRESHOLD", "0.70")
+)
+WHISPER_LANGUAGE_SHORT_SPEECH_SECONDS = float(
+    os.environ.get("VISL_WHISPER_LANGUAGE_SHORT_SPEECH_SECONDS", "1.0")
+)
+
+# Optional static FX normalization for demo risk thresholds. Values are INR
+# per unit of currency and must be supplied deliberately by the deployment,
+# e.g. VISL_FX_TO_INR_JSON='{"USD": 83.0, "EUR": 90.0}'. INR is always
+# known. Production must use an approved institutional FX source instead.
+FX_TO_INR_JSON = os.environ.get("VISL_FX_TO_INR_JSON", "{}")
 
 # Raw analysis uploads are transient by default.  Enrollment samples remain
 # associated with their enrolled profile; this switch concerns call analysis.
@@ -136,6 +162,12 @@ SPOOF_VERY_HIGH_GENUINE_MAX = 0.25
 SPOOF_PROBABLY_GENUINE_MAX = 0.45
 SPOOF_SUSPICIOUS_MAX = 0.65
 SPOOF_LIKELY_AI_MAX = 0.85
+
+# AASIST is a classifier, not a probability-calibrated model for arbitrary
+# browser microphone audio.  The UI-facing score uses temperature-scaled
+# logit evidence. Tune this only with a labelled validation dataset.
+SPOOF_CALIBRATION_VERSION = "temperature-scaled-logit-v1"
+SPOOF_CALIBRATION_TEMPERATURE = 2.5
 
 # Keyword lists for the urgency NLP detector (app/services/urgency_detector.py).
 # Checked case-insensitively as substrings of the transcript.

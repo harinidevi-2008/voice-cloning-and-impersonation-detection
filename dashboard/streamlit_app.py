@@ -506,59 +506,9 @@ def render_verdict_banner(tier_name: str, color: str, bg: str, backend_verdict: 
     )
 
 
-def generate_preventive_actions(result: dict) -> list[str]:
-    """Return concise, deduplicated safeguards for the current analysis."""
-    actions_by_risk = {
-        "LOW": [
-            "Proceed with the transaction.",
-            "Log the interaction.",
-            "No further verification required.",
-        ],
-        "MEDIUM": [
-            "Verify one personal identity detail.",
-            "Confirm payment using the registered number.",
-            "Do not share OTP or PIN.",
-            "Record the interaction.",
-        ],
-        "HIGH": [
-            "Pause the transaction immediately.",
-            "Verify identity via another channel.",
-            "Contact the organization directly.",
-            "Escalate to fraud monitoring.",
-        ],
-        "CRITICAL": [
-            "Block the transaction.",
-            "Disconnect the call.",
-            "Freeze payment authorization.",
-            "Preserve recording as evidence.",
-            "Notify cybersecurity response.",
-        ],
-    }
-    final_risk = (result.get("verdict") or result.get("final_risk") or "LOW").upper()
-    actions = list(actions_by_risk.get(final_risk, actions_by_risk["MEDIUM"]))
-
-    # Use the evidence itself, not a static risk label, for additions.
-    amount = result.get("detected_amount") or result.get("amount") or 0
-    urgency = (result.get("detected_urgency") or result.get("urgency") or "low").upper()
-    spoof_score = result.get("spoof_score") or 0
-    additions = []
-    if amount > 100_000:
-        additions.append("Require dual approval before payment.")
-    if urgency == "HIGH":
-        additions.append("Ignore pressure tactics requesting immediate action.")
-    if spoof_score > 0.70:
-        additions.append("Treat the voice as potentially AI-generated.")
-    for action in additions:
-        if action not in actions and len(actions) >= 5:
-            actions.pop()
-        if action not in actions:
-            actions.append(action)
-    return actions[:5]
-
-
 def render_recommended_action(result: dict, tier_name: str, color: str, bg: str):
     t = THEME
-    actions_html = "".join(f"<li>{action}</li>" for action in generate_preventive_actions(result))
+    actions_html = "".join(f"<li>{action}</li>" for action in (result.get("preventive_actions") or []))
     st.markdown(
         f"""
         <div style="
@@ -685,7 +635,6 @@ with tab_enroll:
                         f"Embedding dimension: {result.get('embedding_dimension', 192)}  ·  "
                         f"Status: {result.get('verification_status', 'Ready for verification')}"
                     )
-                    st.balloons()
 
     with right:
         st.markdown("**Currently Enrolled Speakers**")
@@ -800,6 +749,23 @@ with tab_analyze:
         render_card_open()
         if transcript:
             st.markdown(f'*"{transcript}"*')
+            selected_language = result.get("selected_language") or result.get("detected_language")
+            language_probability = result.get("language_probability")
+            if selected_language:
+                language_label = {"ta": "Tamil", "hi": "Hindi", "en": "English"}.get(
+                    selected_language, selected_language
+                )
+                language_text = f"Language: {language_label} ({selected_language})"
+                if language_probability is not None:
+                    confidence_label = (
+                        "Initial detection confidence"
+                        if result.get("language_detection_method") == "candidate_verification"
+                        else "Detection confidence"
+                    )
+                    language_text += f" · {confidence_label}: {float(language_probability):.0%}"
+                if result.get("language_detection_method") == "candidate_verification":
+                    language_text += " · Verified from supported language candidates"
+                st.caption(language_text)
         else:
             st.error("Transcription failed")
         render_card_close()
@@ -809,7 +775,7 @@ with tab_analyze:
         # Task 7 layout: Amount, Urgency, Speaker Match, Spoof Score, Risk
         d1, d2, d3, d4, d5 = st.columns(5)
         with d1:
-            amount_display = f"\u20b9{int(detected_amount):,}" if detected_amount else "Not detected"
+            amount_display = result.get("display_amount") or (f"\u20b9{int(detected_amount):,}" if detected_amount else "Not detected")
             st.metric("Amount", amount_display, help="Detected automatically from speech")
         with d2:
             st.markdown("**Urgency**")
@@ -959,7 +925,7 @@ with tab_recent:
                 risk = (entry.get("risk") or "UNKNOWN").upper()
                 speaker = entry.get("speaker_name") or "Unknown speaker"
                 amount = entry.get("amount")
-                amount_display = f"₹{amount:,.0f}" if amount is not None else "No amount detected"
+                amount_display = entry.get("display_amount") or (f"₹{amount:,.0f}" if amount is not None else "No amount detected")
                 label = f"{entry.get('timestamp', 'Unknown time')}  |  {speaker}  |  {risk}"
                 risk_color = {
                     "LOW": THEME["success"], "MEDIUM": THEME["warning"],
@@ -988,5 +954,5 @@ with tab_recent:
                         unsafe_allow_html=True,
                     )
                     st.markdown("**Preventive actions**")
-                    for action in generate_preventive_actions(entry):
+                    for action in (entry.get("preventive_actions") or []):
                         st.markdown(f"- {action}")

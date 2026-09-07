@@ -51,15 +51,18 @@ def test_format_inr():
 def test_extract_amount_details_matches_spec_shape():
     from app.services.entity_extraction import extract_amount_details
 
-    assert extract_amount_details("transfer fifty thousand") == {
-        "amount": 50000.0, "amount_text": "\u20b950,000",
-    }
-    assert extract_amount_details("send 2 lakhs") == {
-        "amount": 200000.0, "amount_text": "\u20b9200,000",
-    }
-    assert extract_amount_details("pay 999 rupees") == {
-        "amount": 999.0, "amount_text": "\u20b9999",
-    }
+    unknown = extract_amount_details("transfer fifty thousand")
+    assert unknown["amount"] == 50000.0
+    assert unknown["currency"] == "UNKNOWN"
+    assert unknown["amount_text"] == "50,000"
+    indian = extract_amount_details("send 2 lakhs")
+    assert indian["amount"] == 200000.0
+    assert indian["currency"] == "INR"
+    assert indian["amount_text"] == "\u20b92,00,000"
+    rupees = extract_amount_details("pay 999 rupees")
+    assert rupees["amount"] == 999.0
+    assert rupees["currency"] == "INR"
+    assert rupees["amount_text"] == "\u20b9999"
     assert extract_amount_details("hello there") == {
         "amount": None, "amount_text": "Not detected",
     }

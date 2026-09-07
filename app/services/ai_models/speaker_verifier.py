@@ -49,7 +49,11 @@ from app.services.ai_models.embedding_store import (
     load_embedding,
 )
 from app.services.ai_models.preprocess import preprocess
-from app.services.ai_models.exceptions import SpeakerEmbeddingMissingError
+from app.services.ai_models.exceptions import (
+    EmbeddingEncryptionKeyError,
+    EncryptedEmbeddingError,
+    SpeakerEmbeddingMissingError,
+)
 
 # Resolved relative to this file, not the process's working directory —
 # see the WINDOWS FIX note above.
@@ -115,7 +119,13 @@ def enroll_speaker_with_id(user_id: int, name: str, role: str, audio_path: str) 
 
 def get_similarity(audio_path: str, user_id: int) -> float:
     live = extract_embedding(audio_path)
-    stored = load_embedding(user_id)
+    try:
+        stored = load_embedding(user_id)
+    except (EmbeddingEncryptionKeyError, EncryptedEmbeddingError) as exc:
+        # Do not expose protected-template details to API callers.
+        raise SpeakerEmbeddingMissingError(
+            f"Protected speaker template unavailable for user_id={user_id}"
+        ) from exc
 
     if stored is None:
         raise SpeakerEmbeddingMissingError(f"No embedding for user_id={user_id}")

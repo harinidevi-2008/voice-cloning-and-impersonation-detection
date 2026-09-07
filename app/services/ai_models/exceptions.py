@@ -33,3 +33,15 @@ class SpeakerEmbeddingMissingError(Exception):
     """Raised when an enrolled profile has no usable ECAPA voice embedding."""
 
     pass
+
+
+class EmbeddingEncryptionKeyError(RuntimeError):
+    """Raised when protected speaker-template encryption is not configured."""
+
+    pass
+
+
+class EncryptedEmbeddingError(RuntimeError):
+    """Raised when an encrypted speaker template cannot be safely decoded."""
+
+    pass

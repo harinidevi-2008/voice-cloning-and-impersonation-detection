@@ -5,7 +5,7 @@ Form(...)/File(...) parameters rather than as Pydantic request models.
 """
 
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class EnrollResponse(BaseModel):
@@ -46,6 +46,12 @@ class AnalyzeResponse(BaseModel):
     # underlying logic.
     transcript: Optional[str] = None
     detected_amount: Optional[float] = None
+    detected_currency: Optional[str] = None
+    currency_symbol: Optional[str] = None
+    display_amount: Optional[str] = None
+    amount_confidence: Optional[float] = None
+    amount_source_text: Optional[str] = None
+    detected_duration: Optional[str] = None
     detected_urgency: Optional[str] = None
     urgency_confidence: Optional[float] = None
     urgency_keywords: Optional[list] = None
@@ -55,7 +61,12 @@ class AnalyzeResponse(BaseModel):
     spoof_label: Optional[str] = None
     detected_language: Optional[str] = None
     language_probability: Optional[float] = None
+    selected_language: Optional[str] = None
+    language_detection_method: Optional[str] = None
+    transcription_model: Optional[str] = None
+    transcription_segments: list[dict] = Field(default_factory=list)
     prosody_risk: Optional[float] = None
     prosody_confidence: Optional[float] = None
     recommended_action: Optional[str] = None
+    preventive_actions: list[str] = Field(default_factory=list)
     call_id: Optional[str] = None

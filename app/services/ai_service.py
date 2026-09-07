@@ -17,8 +17,12 @@ dispatcher here.
 from app.config import AI_BACKEND
 
 if AI_BACKEND == "real":
-    from app.services.real_ai_service import get_spoof_score, get_similarity
+    from app.services.real_ai_service import get_spoof_assessment, get_spoof_score, get_similarity
 else:
     from app.services.mock_ai_service import get_spoof_score, get_similarity
 
-__all__ = ["get_spoof_score", "get_similarity"]
+    def get_spoof_assessment(audio_path: str) -> dict:
+        """Keep mock tests deterministic while matching the real interface."""
+        return {"spoof_score": get_spoof_score(audio_path), "calibration": {"method": "mock"}}
+
+__all__ = ["get_spoof_score", "get_spoof_assessment", "get_similarity"]

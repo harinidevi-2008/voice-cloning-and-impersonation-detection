@@ -36,3 +36,17 @@ def test_aasist_uses_the_reference_fixed_input_length(tmp_path):
     path.write_bytes(_wav_bytes(2.1))
     waveform = prepare_aasist_waveform(str(path))
     assert waveform.shape == (AASIST_INPUT_SAMPLES,)
+
+
+def test_aasist_preserves_official_eval_window_including_leading_silence(tmp_path):
+    # The bundled evaluation loader does not trim silence before its first
+    # deterministic 64,600-sample crop. Browser-converted WAV must follow
+    # that same path rather than moving speech into the first frame.
+    path = tmp_path / "leading_silence.wav"
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * 8000 + b"\x01\x00" * 32000)
+    waveform = prepare_aasist_waveform(str(path))
+    assert waveform[0] == 0.0

@@ -47,7 +47,20 @@ import os
 import re
 from typing import Optional
 
-from app.config import TRANSCRIPTION_BACKEND, WHISPER_MODEL_SIZE
+from app.config import (
+    TRANSCRIPTION_BACKEND,
+    WHISPER_BEAM_SIZE,
+    WHISPER_LANGUAGE_CONFIDENCE_THRESHOLD,
+    WHISPER_LANGUAGE_SHORT_SPEECH_SECONDS,
+    WHISPER_MODEL_SIZE,
+    WHISPER_VAD_FILTER,
+)
+
+_SUPPORTED_TRANSCRIPTION_LANGUAGES = ("ta", "hi", "en")
+_SCRIPT_RANGES = {
+    "ta": ("\u0B80", "\u0BFF"),
+    "hi": ("\u0900", "\u097F"),
+}
 
 
 def _hash_to_unit_float(seed: str) -> float:
@@ -86,17 +99,131 @@ def _get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
+        try:
+            _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not load requested Faster-Whisper model '{WHISPER_MODEL_SIZE}'. "
+                "Install/cache that model or explicitly choose a supported model size."
+            ) from exc
     return _whisper_model
+
+
+def _collect_segments(segments) -> tuple[str, list[dict]]:
+    """Materialize Faster-Whisper's lazy segment iterator once."""
+    metadata, transcript_parts = [], []
+    for segment in segments:
+        text = segment.text.strip()
+        if text:
+            transcript_parts.append(text)
+        metadata.append({
+            "start": round(float(segment.start), 3),
+            "end": round(float(segment.end), 3),
+            "text": text,
+            "avg_logprob": getattr(segment, "avg_logprob", None),
+            "no_speech_prob": getattr(segment, "no_speech_prob", None),
+            "compression_ratio": getattr(segment, "compression_ratio", None),
+        })
+    return " ".join(transcript_parts).strip(), metadata
+
+
+def _transcribe_pass(model, audio_path: str, language: Optional[str]):
+    """Run one speech-preserving Faster-Whisper pass, optionally hinted."""
+    segments, info = model.transcribe(
+        audio_path,
+        task="transcribe",
+        language=language,
+        beam_size=WHISPER_BEAM_SIZE,
+        temperature=0.0,
+        vad_filter=WHISPER_VAD_FILTER,
+        condition_on_previous_text=False,
+        word_timestamps=True,
+    )
+    transcript, metadata = _collect_segments(segments)
+    return info, transcript, metadata
+
+
+def _speech_duration(segments: list[dict]) -> float:
+    return sum(max(0.0, float(segment["end"]) - float(segment["start"])) for segment in segments)
+
+
+def _requires_candidate_verification(
+    detected_language: Optional[str], language_probability: Optional[float], speech_seconds: float
+) -> bool:
+    """Decide whether automatic identification is reliable enough to retain."""
+    if detected_language not in _SUPPORTED_TRANSCRIPTION_LANGUAGES:
+        return True
+    if language_probability is None or language_probability < WHISPER_LANGUAGE_CONFIDENCE_THRESHOLD:
+        return True
+    return 0 < speech_seconds < WHISPER_LANGUAGE_SHORT_SPEECH_SECONDS
+
+
+def _script_consistency(transcript: str, language: str) -> float:
+    letters = [char for char in transcript if char.isalpha()]
+    if not letters:
+        return 0.0
+    if language == "en":
+        matching = sum("a" <= char.casefold() <= "z" for char in letters)
+    else:
+        start, end = _SCRIPT_RANGES[language]
+        matching = sum(start <= char <= end for char in letters)
+    return matching / len(letters)
+
+
+def _candidate_score(language: str, transcript: str, segments: list[dict]) -> float:
+    """Score a forced-language candidate using model evidence first.
+
+    Higher average token log-probability and lower no-speech probability are
+    primary. Compression-ratio penalty discourages repetitive hallucinations.
+    Script consistency is deliberately a small secondary term, which lets
+    code-switched output remain valid and never substitutes for audio evidence.
+    """
+    if not transcript or not segments:
+        return float("-inf")
+    logprobs = [float(item["avg_logprob"]) for item in segments if item["avg_logprob"] is not None]
+    no_speech = [float(item["no_speech_prob"]) for item in segments if item["no_speech_prob"] is not None]
+    compression = [float(item["compression_ratio"]) for item in segments if item["compression_ratio"] is not None]
+    average_logprob = sum(logprobs) / len(logprobs) if logprobs else -8.0
+    average_no_speech = sum(no_speech) / len(no_speech) if no_speech else 0.0
+    hallucination_penalty = sum(max(0.0, ratio - 2.4) for ratio in compression) / len(compression) if compression else 0.0
+    return average_logprob - (0.35 * average_no_speech) - (0.15 * hallucination_penalty) + (0.08 * _script_consistency(transcript, language))
+
+
+def _select_candidate(candidates: dict[str, tuple[str, list[dict]]]) -> str:
+    """Select the best language generically; no language-pair special cases."""
+    return max(
+        _SUPPORTED_TRANSCRIPTION_LANGUAGES,
+        key=lambda language: (_candidate_score(language, *candidates[language]), -_SUPPORTED_TRANSCRIPTION_LANGUAGES.index(language)),
+    )
 
 
 def _real_transcribe_detailed(audio_path: str) -> dict:
     model = _get_whisper_model()
-    segments, info = model.transcribe(audio_path, beam_size=5, language=None)
+    # Conversion supplies mono 16 kHz PCM without trimming. This is separate
+    # from AASIST's model-specific preprocessing and preserves speech cues.
+    info, transcript, segment_metadata = _transcribe_pass(model, audio_path, language=None)
+    detected_language = getattr(info, "language", None)
+    language_probability = getattr(info, "language_probability", None)
+    selected_language = detected_language
+    method = "automatic"
+
+    if _requires_candidate_verification(detected_language, language_probability, _speech_duration(segment_metadata)):
+        candidates = {}
+        for language in _SUPPORTED_TRANSCRIPTION_LANGUAGES:
+            _, candidate_transcript, candidate_segments = _transcribe_pass(model, audio_path, language=language)
+            candidates[language] = (candidate_transcript, candidate_segments)
+        selected_language = _select_candidate(candidates)
+        transcript, segment_metadata = candidates[selected_language]
+        method = "candidate_verification"
+
     return {
-        "transcript": " ".join(segment.text.strip() for segment in segments).strip(),
-        "detected_language": getattr(info, "language", None),
-        "language_probability": getattr(info, "language_probability", None),
+        "transcript": transcript,
+        "detected_language": detected_language,
+        "language_probability": language_probability,
+        "selected_language": selected_language,
+        "language_detection_method": method,
+        "model_size": WHISPER_MODEL_SIZE,
+        "segments": segment_metadata,
     }
 
 
@@ -108,6 +235,10 @@ def transcribe_detailed(audio_path: str, filename_hint: Optional[str] = None) ->
         "transcript": _mock_transcribe(filename_hint or audio_path),
         "detected_language": None,
         "language_probability": None,
+        "selected_language": None,
+        "language_detection_method": "mock",
+        "model_size": None,
+        "segments": [],
     }
 
 

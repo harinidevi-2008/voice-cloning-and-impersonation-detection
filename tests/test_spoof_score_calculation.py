@@ -16,7 +16,10 @@ import math
 # import it without requiring the real-AI dependencies to be installed —
 # spoof_detector.py itself imports torch unconditionally at module level
 # and would make this uncollectable in the standard mock-only environment.
-from app.services.ai_models.aasist_scoring import spoof_probability_from_logits
+from app.services.ai_models.aasist_scoring import (
+    calibrated_spoof_score_from_logits,
+    spoof_probability_from_logits,
+)
 
 
 def test_higher_spoof_logit_gives_high_spoof_probability():
@@ -65,3 +68,16 @@ def test_sigmoid_on_single_column_would_have_been_wrong():
     naive_sigmoid_of_bonafide = 1 / (1 + math.exp(-logit_bonafide))
     naive_spoof_score_original_bug = naive_sigmoid_of_bonafide  # original code's result
     assert not math.isclose(correct, naive_spoof_score_original_bug, abs_tol=0.05)
+
+
+def test_calibration_preserves_direction_and_neutral_evidence():
+    assert calibrated_spoof_score_from_logits(0.0, 5.0) < 0.2
+    assert calibrated_spoof_score_from_logits(5.0, 0.0) > 0.8
+    assert calibrated_spoof_score_from_logits(3.0, 3.0) == 0.5
+
+
+def test_calibration_is_bounded_and_less_overconfident_than_raw_softmax():
+    for spoof_logit, bonafide_logit in [(100, -100), (-100, 100), (0, 0), (5, 0)]:
+        calibrated = calibrated_spoof_score_from_logits(spoof_logit, bonafide_logit)
+        assert 0.0 <= calibrated <= 1.0
+    assert calibrated_spoof_score_from_logits(5.0, 0.0) < spoof_probability_from_logits(5.0, 0.0)

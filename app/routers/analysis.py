@@ -1,6 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.db import analysis_db
 
@@ -14,10 +14,13 @@ class CallLogOut(BaseModel):
     speaker_user_id: Optional[int] = None
     transcript: Optional[str] = None
     amount: Optional[float] = None
+    currency: Optional[str] = None
+    display_amount: Optional[str] = None
     urgency: Optional[str] = None
     spoof_score: Optional[float] = None
     similarity: Optional[float] = None
     risk: Optional[str] = None
+    preventive_actions: list[str] = Field(default_factory=list)
 
 
 @router.get("/analysis/recent", response_model=List[CallLogOut])

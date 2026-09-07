@@ -31,12 +31,19 @@ the resolution to the integration risk flagged back when mock_ai_service.py
 was first written (see that file's own docstring).
 """
 
-from app.services.ai_models.spoof_detector import get_spoof_score as _get_spoof_score
+from app.services.ai_models.spoof_detector import (
+    get_spoof_assessment as _get_spoof_assessment,
+    get_spoof_score as _get_spoof_score,
+)
 from app.services.ai_models import speaker_verifier as _speaker_verifier
 
 
 def get_spoof_score(audio_path: str) -> float:
     return _get_spoof_score(audio_path)
+
+
+def get_spoof_assessment(audio_path: str) -> dict:
+    return _get_spoof_assessment(audio_path)
 
 
 def get_similarity(audio_path: str, user_id: int) -> float:

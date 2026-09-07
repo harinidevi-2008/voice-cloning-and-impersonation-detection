@@ -10,7 +10,7 @@ from app.services.audio_conversion import convert_to_standard_wav
 from app.db import crud
 from app.config import AI_BACKEND
 from app.services import mock_ai_service
-from app.services.ai_models.exceptions import AudioDecodeError
+from app.services.ai_models.exceptions import AudioDecodeError, EmbeddingEncryptionKeyError
 from app.services.ai_models.embedding_store import (
     EMBEDDING_DIMENSION,
     delete_embedding,
@@ -44,11 +44,9 @@ async def enroll_user(
     audio_file: UploadFile = File(..., description="Reference voice sample for enrollment"),
 ):
     """
-    Enrolls a new speaker: saves their reference audio, normalizes it to
-    mono 16kHz WAV (accepts WAV/MP3/M4A/AAC/FLAC/OGG/MP4 — see
-    app/services/audio_conversion.py), stores their profile in the local
-    database, and registers their voiceprint with the AI speaker-
-    verification model (mock or real, per AI_BACKEND).
+    Enrolls a speaker with temporary reference audio only. The normalized
+    WAV is used to create an ECAPA template then removed in ``finally``;
+    the embedding store persists an authenticated-encrypted template only.
 
     ATOMICITY: if voiceprint registration fails after the user row has
     already been created, the user row is deleted and the saved audio file
@@ -63,25 +61,15 @@ async def enroll_user(
     if not role:
         raise HTTPException(status_code=400, detail="'role' must not be empty.")
 
-    raw_path = save_upload_file(audio_file, prefix="enroll")
-
+    raw_path = None
+    saved_path = None
+    user_id = None
     try:
+        raw_path = save_upload_file(audio_file, prefix="enroll")
         saved_path = convert_to_standard_wav(raw_path)
-    except AudioDecodeError as exc:
-        _cleanup_file(raw_path)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not process the uploaded audio for enrollment: {exc}",
-        )
-
-    # The pre-conversion upload is no longer needed once we have the
-    # normalized WAV — only the converted file is used downstream.
-    _cleanup_file(raw_path)
-
-    # Our local DB is authoritative for user_id (see crud.py note).
-    user_id = crud.create_user(name=name, role=role, audio_path=saved_path)
-
-    try:
+        # Our local DB is authoritative for user_id (see crud.py note). It
+        # intentionally stores no path to temporary enrollment audio.
+        user_id = crud.create_user(name=name, role=role)
         if AI_BACKEND == "real":
             # Pin the embedding to OUR user_id, not whatever the embeddings
             # DB would auto-assign — this is what keeps app/db/database.py
@@ -105,26 +93,42 @@ async def enroll_user(
         if not has_valid_embedding(user_id):
             raise RuntimeError("voice embedding was not persisted or has an invalid dimension")
         crud.set_embedding_status(user_id, "ready")
+    except HTTPException:
+        raise
     except AudioDecodeError as exc:
-        _rollback(user_id, saved_path)
+        if user_id is not None:
+            _rollback(user_id)
         raise HTTPException(
             status_code=400,
-            detail=f"Could not process the uploaded audio for enrollment: {exc}",
+            detail="Could not process the uploaded audio for enrollment.",
         )
+    except EmbeddingEncryptionKeyError as exc:
+        if user_id is not None:
+            _rollback(user_id)
+        # Keep the browser-facing response generic, but make the operational
+        # cause actionable in the backend terminal without exposing a key.
+        logger.error(
+            "Speaker enrollment unavailable: category=embedding_encryption_key; "
+            "configure VISL_EMBEDDING_ENCRYPTION_KEY in the backend process",
+            exc_info=exc,
+        )
+        raise HTTPException(status_code=503, detail="Speaker enrollment is temporarily unavailable.")
     except Exception as exc:  # noqa: BLE001 — any AI-service failure must not leave a ghost user
-        _rollback(user_id, saved_path)
-        logger.exception("Enrollment failed for user_id=%s during voiceprint registration", user_id)
+        if user_id is not None:
+            _rollback(user_id)
+        logger.exception("Speaker enrollment failed during voiceprint registration")
         raise HTTPException(
             status_code=500,
             detail="Enrollment failed while registering the voiceprint. "
                    "No user was created — please try again.",
         )
 
-    return EnrollResponse(
-        user_id=user_id,
-        embedding_dimension=EMBEDDING_DIMENSION,
-        verification_status="Ready for verification",
-    )
+    finally:
+        _cleanup_file(raw_path)
+        _cleanup_file(saved_path)
+
+    return EnrollResponse(user_id=user_id, embedding_dimension=EMBEDDING_DIMENSION,
+                          verification_status="Ready for verification")
 
 
 def _cleanup_file(path: str) -> None:
@@ -132,11 +136,11 @@ def _cleanup_file(path: str) -> None:
         if path and os.path.exists(path):
             os.remove(path)
     except OSError:
-        logger.exception("Failed to remove temporary file %s", path)
+        logger.exception("Failed to remove temporary enrollment audio")
 
 
-def _rollback(user_id: int, saved_path: str) -> None:
-    """Best-effort cleanup: delete the user row and the uploaded file."""
+def _rollback(user_id: int) -> None:
+    """Best-effort rollback for a failed protected-template enrollment."""
     try:
         crud.delete_user(user_id)
     except Exception:  # noqa: BLE001 — rollback must never mask the original error
@@ -146,5 +150,3 @@ def _rollback(user_id: int, saved_path: str) -> None:
         delete_embedding(user_id)
     except Exception:  # noqa: BLE001 — rollback must never mask the original error
         logger.exception("Failed to remove embedding for user_id=%s after enrollment failure", user_id)
-
-    _cleanup_file(saved_path)

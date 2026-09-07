@@ -187,8 +187,10 @@ Member 1's real models are integrated and available behind a switch —
 # Default: fast, deterministic mock (what the automated tests use)
 uvicorn app.main:app --reload --port 8000
 
-# Real models: XLS-R+AASIST spoof detection, ECAPA-TDNN speaker verification
+# Real models: XLS-R+AASIST spoof detection, ECAPA-TDNN speaker verification.
+# This must be set in the same terminal/process that starts uvicorn.
 export VISL_AI_BACKEND=real          # Windows PowerShell: $env:VISL_AI_BACKEND="real"
+export VISL_EMBEDDING_ENCRYPTION_KEY='paste-the-generated-key-here'
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -206,6 +208,30 @@ code and pretrained weights are already included in this repo under
 `app/services/ai_models/checkpoints/aasist/` (sourced from the official
 [clovaai/aasist](https://github.com/clovaai/aasist), MIT licensed — the
 zip you shared didn't include them, only the training/eval scaffolding).
+
+### Protected speaker templates
+
+Enrollment audio is temporary: both the uploaded file and normalized WAV are
+deleted after ECAPA extracts the speaker embedding. The application stores
+only an authenticated-encrypted ECAPA biometric speaker template in
+`data/voice_embeddings.db`; it does not retain enrollment recordings, mel
+spectrograms, MFCCs, or plaintext vectors. The encryption key is never stored
+in SQLite or returned by the API.
+
+Set `VISL_EMBEDDING_ENCRYPTION_KEY` before enrolling or verifying a speaker.
+It must be exported in the terminal that launches the FastAPI backend; setting
+it only for Streamlit does not make it available to `/enroll` and causes the
+safe HTTP 503 enrollment refusal:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+export VISL_EMBEDDING_ENCRYPTION_KEY='paste-the-generated-key-here'
+```
+
+Missing or malformed keys, corrupt templates, and decryption failures fail
+closed. For a bank deployment, inject this key through an institutional
+secrets manager, KMS, or HSM—not a key file or environment variable managed
+alongside the database.
 
 ### Validate it before trusting it
 

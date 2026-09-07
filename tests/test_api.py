@@ -8,7 +8,7 @@ os.environ.setdefault("PYTHONPATH", os.path.dirname(os.path.dirname(os.path.absp
 from fastapi.testclient import TestClient
 from app.main import app
 from app.db.database import init_db
-from app.db import analysis_db
+from app.db import analysis_db, crud
 from app.config import AI_BACKEND, AUDIO_UPLOAD_DIR
 from app.services.ai_models.exceptions import AudioDecodeError
 
@@ -41,6 +41,7 @@ def _fake_wav_bytes() -> bytes:
 
 
 def test_enroll_and_list_users():
+    files_before = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
     files = {"audio_file": ("genuine_alice.wav", io.BytesIO(_fake_wav_bytes()), "audio/wav")}
     data = {"name": "Alice", "role": "customer"}
     resp = client.post("/enroll", data=data, files=files)
@@ -48,6 +49,12 @@ def test_enroll_and_list_users():
     body = resp.json()
     assert "user_id" in body
     user_id = body["user_id"]
+
+    # Enrollment recordings and their converted WAV copies are transient.
+    files_after = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
+    assert files_after == files_before
+    assert crud.get_user(user_id)["audio_path"] is None
+    assert "VISL_EMBEDDING_ENCRYPTION_KEY" not in str(body)
 
     resp_users = client.get("/users")
     assert resp_users.status_code == 200
@@ -95,6 +102,20 @@ def test_analyze_returns_latency_header():
         "impersonation_risk", "verdict",
     }
     assert original_contract_fields.issubset(body_keys)
+
+
+def test_analyze_actions_match_persisted_recent_analysis():
+    files = {"audio_file": ("clone_actions.wav", io.BytesIO(_fake_wav_bytes()), "audio/wav")}
+    data = {"transaction_value": "200000", "urgency": "high", "caller_known": "false"}
+    response = client.post("/analyze", data=data, files=files)
+    assert response.status_code == 200
+    analysis = response.json()
+    assert analysis["preventive_actions"]
+
+    recent = client.get("/analysis/recent", params={"limit": 100})
+    assert recent.status_code == 200
+    saved = next(item for item in recent.json() if item["call_id"] == analysis["call_id"])
+    assert saved["preventive_actions"] == analysis["preventive_actions"]
 
 
 def test_analyze_with_unknown_claimed_user_returns_404():
@@ -235,6 +256,20 @@ def test_enrollment_returns_400_not_500_for_audio_decode_error(monkeypatch):
     assert not any(u["name"] == "Corrupt Audio User" for u in users_after), (
         "Ghost user found after a simulated AudioDecodeError — rollback did not work"
     )
+
+
+def test_enrollment_fails_closed_without_template_encryption_key(monkeypatch, caplog):
+    monkeypatch.delenv("VISL_EMBEDDING_ENCRYPTION_KEY")
+    files_before = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
+    files = {"audio_file": ("genuine_no_key.wav", io.BytesIO(_fake_wav_bytes()), "audio/wav")}
+    response = client.post("/enroll", data={"name": "No Key", "role": "customer"}, files=files)
+
+    assert response.status_code == 503
+    assert "VISL_EMBEDDING_ENCRYPTION_KEY" not in str(response.json())
+    assert "category=embedding_encryption_key" in caplog.text
+    assert not any(user["name"] == "No Key" for user in client.get("/users").json())
+    files_after = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
+    assert files_after == files_before
 
 
 def test_analyze_returns_400_not_500_for_audio_decode_error(monkeypatch):

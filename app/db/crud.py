@@ -15,7 +15,7 @@ from typing import Optional, List
 from app.db.database import get_connection
 
 
-def create_user(name: str, role: str, audio_path: str) -> int:
+def create_user(name: str, role: str, audio_path: Optional[str] = None) -> int:
     conn = get_connection()
     try:
         enrolled_at = datetime.now(timezone.utc).isoformat()

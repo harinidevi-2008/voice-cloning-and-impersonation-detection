@@ -28,6 +28,8 @@ import numpy as np
 
 from app.services.ai_models.preprocess import prepare_aasist_input
 from app.services.ai_models.aasist_scoring import (
+    calibrated_spoof_score_from_logits,
+    spoof_calibration_metadata,
     spoof_label_from_score,
     spoof_probability_from_logits,
 )
@@ -98,13 +100,16 @@ class SpoofDetector:
         logit_spoof = float(logit_row[0])
         logit_bonafide = float(logit_row[1])
 
-        spoof_score = spoof_probability_from_logits(logit_spoof, logit_bonafide)
+        raw_spoof_evidence = spoof_probability_from_logits(logit_spoof, logit_bonafide)
+        spoof_score = calibrated_spoof_score_from_logits(logit_spoof, logit_bonafide)
         return {
             "spoof_score": spoof_score,
+            "raw_spoof_evidence": raw_spoof_evidence,
             "spoof_label": spoof_label_from_score(spoof_score),
             "logit_spoof": logit_spoof,
             "logit_bonafide": logit_bonafide,
             "normalized_duration_seconds": round(normalized_duration, 4),
+            "calibration": spoof_calibration_metadata(),
         }
 
 
@@ -133,5 +138,5 @@ def get_spoof_score(audio_path: str) -> float:
 
 
 def get_spoof_assessment(audio_path: str) -> dict:
-    """Return ``spoof_score`` and the calibrated ``spoof_label``."""
+    """Return calibrated score plus raw AASIST diagnostics."""
     return _get_detector().predict_assessment(audio_path)

@@ -19,6 +19,7 @@ change isn't silently lost — see _migrate_legacy_table().
 
 import sqlite3
 import uuid
+import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -88,13 +89,22 @@ def init_db() -> None:
                 urgency TEXT,
                 spoof_score REAL,
                 similarity REAL,
-                risk TEXT
+                risk TEXT,
+                preventive_actions TEXT,
+                currency TEXT,
+                display_amount TEXT
             )
             """
         )
         columns = {row[1] for row in conn.execute("PRAGMA table_info(call_logs)")}
         if "speaker_user_id" not in columns:
             conn.execute("ALTER TABLE call_logs ADD COLUMN speaker_user_id INTEGER NULL")
+        if "preventive_actions" not in columns:
+            conn.execute("ALTER TABLE call_logs ADD COLUMN preventive_actions TEXT NULL")
+        if "currency" not in columns:
+            conn.execute("ALTER TABLE call_logs ADD COLUMN currency TEXT NULL")
+        if "display_amount" not in columns:
+            conn.execute("ALTER TABLE call_logs ADD COLUMN display_amount TEXT NULL")
         _migrate_legacy_table(conn)
         conn.commit()
     finally:
@@ -110,6 +120,9 @@ def save_analysis(
     risk: str,
     speaker_name: Optional[str] = None,
     speaker_user_id: Optional[int] = None,
+    preventive_actions: Optional[list[str]] = None,
+    currency: Optional[str] = None,
+    display_amount: Optional[str] = None,
 ) -> str:
     """Inserts a new call record and returns its generated call_id."""
     call_id = uuid.uuid4().hex
@@ -118,8 +131,8 @@ def save_analysis(
         conn.execute(
             """
             INSERT INTO call_logs
-                (call_id, timestamp, speaker_name, speaker_user_id, transcript, amount, urgency, spoof_score, similarity, risk)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (call_id, timestamp, speaker_name, speaker_user_id, transcript, amount, urgency, spoof_score, similarity, risk, preventive_actions, currency, display_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 call_id,
@@ -132,6 +145,9 @@ def save_analysis(
                 spoof_score,
                 similarity,
                 risk,
+                json.dumps(preventive_actions or [], ensure_ascii=False),
+                currency,
+                display_amount,
             ),
         )
         conn.commit()
@@ -148,6 +164,16 @@ def list_recent_analyses(limit: int = 10) -> List[dict]:
         rows = conn.execute(
             "SELECT * FROM call_logs ORDER BY timestamp DESC LIMIT ?", (limit,)
         ).fetchall()
-        return [dict(row) for row in rows]
+        records = []
+        for row in rows:
+            record = dict(row)
+            raw_actions = record.get("preventive_actions")
+            try:
+                decoded = json.loads(raw_actions) if raw_actions else []
+                record["preventive_actions"] = decoded if isinstance(decoded, list) and all(isinstance(x, str) for x in decoded) else []
+            except (TypeError, json.JSONDecodeError):
+                record["preventive_actions"] = []
+            records.append(record)
+        return records
     finally:
         conn.close()

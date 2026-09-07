@@ -41,18 +41,14 @@ def preprocess(audio_path: str):
         # Routes have already normalized browser and uploaded audio with
         # ffmpeg. SoundFile is therefore sufficient and avoids librosa's
         # optional numba/JIT import path, which is incompatible with some
-        # current Python builds. Keep the same mono, 16 kHz and 20 dB trim
-        # semantics used by the original librosa preprocessing.
+        # current Python builds. Do not trim silence: the bundled official
+        # AASIST evaluation loader reads the full waveform and then applies
+        # deterministic pad/crop. Trimming changes the first model window.
         waveform, sr = sf.read(audio_path, dtype="float32", always_2d=True)
         waveform = waveform.mean(axis=1)
         if sr != TARGET_SR:
             divisor = int(np.gcd(sr, TARGET_SR))
             waveform = resample_poly(waveform, TARGET_SR // divisor, sr // divisor)
-        if waveform.size:
-            threshold = float(np.max(np.abs(waveform))) * (10 ** (-20 / 20))
-            non_silent = np.flatnonzero(np.abs(waveform) >= threshold)
-            if non_silent.size:
-                waveform = waveform[non_silent[0]:non_silent[-1] + 1]
     except AudioDecodeError:
         raise
     except Exception as exc:

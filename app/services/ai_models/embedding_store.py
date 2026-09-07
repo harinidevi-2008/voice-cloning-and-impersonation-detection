@@ -1,28 +1,73 @@
-"""
-Adapted from Member 1's utils/database.py (voice-cloning-and-impersonation-
-detection repo). Stores ECAPA-TDNN speaker embeddings, keyed by user_id.
+"""Encrypted ECAPA-TDNN biometric speaker-template storage.
 
-CHANGE FROM ORIGINAL: DB_PATH was a relative path ("database/voice.db"),
-which only worked from one specific working directory and put runtime data
-outside this project's existing data/ convention. Moved under
-member2_backend/data/ (already gitignored) alongside the main app database.
-
-This is intentionally a SEPARATE SQLite file from app/db/database.py's
-voice_integrity.db. That database owns application-level user metadata
-(name, role, enrolled_at) for the dashboard and API; this one owns the raw
-embedding vectors, which the main app schema has no column for. The two are
-kept in sync by user_id — see app/routers/enroll.py and the note in
-app/services/real_ai_service.py for exactly how.
+The embedding database is intentionally separate from the application user
+database. It stores authenticated-encrypted templates only: no raw enrollment
+audio, feature files, or plaintext float vectors are persisted.
 """
 
 import os
 import sqlite3
+
 import numpy as np
+from cryptography.fernet import Fernet, InvalidToken
 
-from app.config import DATA_DIR
+from app.config import DATA_DIR, EMBEDDING_DB_PATH, EMBEDDING_ENCRYPTION_KEY_ENV
+from app.services.ai_models.exceptions import (
+    EmbeddingEncryptionKeyError,
+    EncryptedEmbeddingError,
+)
 
-EMBEDDING_DB_PATH = os.path.join(DATA_DIR, "voice_embeddings.db")
 EMBEDDING_DIMENSION = 192
+_ENCRYPTED_TEMPLATE_VERSION = 1
+
+
+def _get_fernet() -> Fernet:
+    """Read the external Fernet key and fail closed if it is unusable."""
+    raw_key = os.environ.get(EMBEDDING_ENCRYPTION_KEY_ENV)
+    if not raw_key:
+        raise EmbeddingEncryptionKeyError(
+            f"{EMBEDDING_ENCRYPTION_KEY_ENV} must be configured to use speaker verification"
+        )
+    try:
+        return Fernet(raw_key.encode("ascii"))
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise EmbeddingEncryptionKeyError("Speaker-template encryption key is malformed") from exc
+
+
+def _serialize_embedding(embedding: np.ndarray) -> bytes:
+    vector = np.asarray(embedding, dtype=np.float32)
+    if vector.ndim != 1 or vector.size != EMBEDDING_DIMENSION or not np.isfinite(vector).all():
+        raise ValueError("Invalid ECAPA embedding")
+    return vector.tobytes()
+
+
+def _deserialize_embedding(payload: bytes) -> np.ndarray:
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise EncryptedEmbeddingError("Invalid protected speaker template")
+    try:
+        embedding = np.frombuffer(bytes(payload), dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise EncryptedEmbeddingError("Invalid protected speaker template") from exc
+    if embedding.ndim != 1 or embedding.size != EMBEDDING_DIMENSION or not np.isfinite(embedding).all():
+        raise EncryptedEmbeddingError("Invalid protected speaker template")
+    return embedding.copy()
+
+
+def _encrypt_embedding(embedding: np.ndarray) -> bytes:
+    return _get_fernet().encrypt(_serialize_embedding(embedding))
+
+
+def _decrypt_embedding(token: bytes) -> np.ndarray:
+    try:
+        plaintext = _get_fernet().decrypt(bytes(token))
+    except (InvalidToken, TypeError, ValueError) as exc:
+        raise EncryptedEmbeddingError("Speaker template decryption failed") from exc
+    try:
+        return _deserialize_embedding(plaintext)
+    finally:
+        # Python cannot guarantee a secure wipe; avoid retaining another
+        # plaintext reference longer than the required conversion.
+        plaintext = None
 
 
 def init_db() -> None:
@@ -35,23 +80,58 @@ def init_db() -> None:
                 user_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
                 role TEXT,
-                embedding BLOB
+                embedding BLOB,
+                template_version INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "template_version" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN template_version INTEGER NOT NULL DEFAULT 0")
+
+        # Migrate valid legacy float32 vectors when a deployment key is
+        # present. Without a key, invalidate legacy bytes rather than leave
+        # plaintext biometric templates on disk; user metadata is preserved.
+        legacy_rows = conn.execute(
+            "SELECT user_id, embedding FROM users WHERE template_version = 0 AND embedding IS NOT NULL"
+        ).fetchall()
+        if legacy_rows:
+            try:
+                fernet = _get_fernet()
+            except EmbeddingEncryptionKeyError:
+                fernet = None
+            for user_id, blob in legacy_rows:
+                plaintext = None
+                try:
+                    if fernet is None:
+                        raise ValueError("no encryption key available for migration")
+                    plaintext = _serialize_embedding(np.frombuffer(blob, dtype=np.float32))
+                    encrypted = fernet.encrypt(plaintext)
+                except (TypeError, ValueError):
+                    conn.execute(
+                        "UPDATE users SET embedding = ?, template_version = ? WHERE user_id = ?",
+                        (None, _ENCRYPTED_TEMPLATE_VERSION, user_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE users SET embedding = ?, template_version = ? WHERE user_id = ?",
+                        (encrypted, _ENCRYPTED_TEMPLATE_VERSION, user_id),
+                    )
+                finally:
+                    plaintext = None
         conn.commit()
     finally:
         conn.close()
 
 
 def save_embedding(name: str, role: str, embedding: np.ndarray) -> int:
-    """Inserts a new embedding and returns the auto-generated user_id."""
+    """Encrypt and insert an embedding, returning its generated user ID."""
+    init_db()
     conn = sqlite3.connect(EMBEDDING_DB_PATH)
     try:
-        blob = embedding.astype(np.float32).tobytes()
         cursor = conn.execute(
-            "INSERT INTO users(name, role, embedding) VALUES (?, ?, ?)",
-            (name, role, blob),
+            "INSERT INTO users(name, role, embedding, template_version) VALUES (?, ?, ?, ?)",
+            (name, role, _encrypt_embedding(embedding), _ENCRYPTED_TEMPLATE_VERSION),
         )
         conn.commit()
         return cursor.lastrowid
@@ -60,22 +140,13 @@ def save_embedding(name: str, role: str, embedding: np.ndarray) -> int:
 
 
 def save_embedding_with_id(user_id: int, name: str, role: str, embedding: np.ndarray) -> int:
-    """
-    Inserts (or overwrites) an embedding at an EXPLICIT user_id.
-
-    Not part of Member 1's original interface — added so this database's
-    user_id can be kept in lockstep with app/db/database.py's, which is the
-    ID the dashboard and API actually expose. Without this, a fresh restart
-    of one database but not the other could desync the two auto-increment
-    counters and cause get_similarity() to look up the wrong (or a
-    nonexistent) embedding.
-    """
+    """Encrypt and persist an embedding at the application-owned user ID."""
+    init_db()
     conn = sqlite3.connect(EMBEDDING_DB_PATH)
     try:
-        blob = embedding.astype(np.float32).tobytes()
         conn.execute(
-            "INSERT OR REPLACE INTO users(user_id, name, role, embedding) VALUES (?, ?, ?, ?)",
-            (user_id, name, role, blob),
+            "INSERT OR REPLACE INTO users(user_id, name, role, embedding, template_version) VALUES (?, ?, ?, ?, ?)",
+            (user_id, name, role, _encrypt_embedding(embedding), _ENCRYPTED_TEMPLATE_VERSION),
         )
         conn.commit()
         return user_id
@@ -84,27 +155,28 @@ def save_embedding_with_id(user_id: int, name: str, role: str, embedding: np.nda
 
 
 def load_embedding(user_id: int):
-    """Load a usable float32 embedding, or ``None`` for absent/bad legacy rows."""
+    """Decrypt a protected float32 template only for an active comparison."""
     conn = sqlite3.connect(EMBEDDING_DB_PATH)
     try:
         row = conn.execute(
-            "SELECT embedding FROM users WHERE user_id=?", (user_id,)
+            "SELECT embedding, template_version FROM users WHERE user_id=?", (user_id,)
         ).fetchone()
     finally:
         conn.close()
 
     if row is None or row[0] is None:
         return None
-    try:
-        embedding = np.frombuffer(row[0], dtype=np.float32)
-    except (TypeError, ValueError):
-        return None
-    return embedding if embedding.size else None
+    if row[1] != _ENCRYPTED_TEMPLATE_VERSION:
+        raise EncryptedEmbeddingError("Speaker template is not an encrypted current-format template")
+    return _decrypt_embedding(row[0])
 
 
 def has_valid_embedding(user_id: int) -> bool:
-    """True only for a finite ECAPA-sized vector usable for verification."""
-    embedding = load_embedding(user_id)
+    """True only for a finite, decryptable ECAPA-sized protected template."""
+    try:
+        embedding = load_embedding(user_id)
+    except (EmbeddingEncryptionKeyError, EncryptedEmbeddingError):
+        return False
     return bool(
         embedding is not None
         and embedding.ndim == 1
@@ -114,14 +186,7 @@ def has_valid_embedding(user_id: int) -> bool:
 
 
 def delete_embedding(user_id: int) -> None:
-    """
-    Rollback helper — see app/routers/enroll.py and app/db/crud.py's
-    delete_user(). Included for defensiveness/symmetry: in the current
-    enrollment flow the app database row is created before the embedding
-    is written, so a failure normally means nothing was written here yet.
-    But if that ordering ever changes, this keeps both databases
-    consistent rather than leaving an orphaned embedding behind.
-    """
+    """Remove a protected template when its enrollment is rolled back."""
     conn = sqlite3.connect(EMBEDDING_DB_PATH)
     try:
         conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))

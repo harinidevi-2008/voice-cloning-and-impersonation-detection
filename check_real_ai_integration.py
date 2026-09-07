@@ -34,6 +34,10 @@ os.environ["VISL_TRANSCRIPTION_BACKEND"] = "real"
 
 
 def main():
+    if not os.environ.get("VISL_EMBEDDING_ENCRYPTION_KEY"):
+        print("ERROR: VISL_EMBEDDING_ENCRYPTION_KEY must be configured for protected speaker-template testing.")
+        sys.exit(1)
+
     audio_path = sys.argv[1] if len(sys.argv) > 1 else "sample.wav"
     if not os.path.exists(audio_path):
         print(f"ERROR: audio file not found: {audio_path}")
@@ -70,17 +74,22 @@ def main():
     print(f"      Normalized duration: {assessment['normalized_duration_seconds']:.2f}s")
     print(f"      Raw logits: spoof(class 0)={assessment['logit_spoof']:.4f}, "
           f"bonafide(class 1)={assessment['logit_bonafide']:.4f}")
-    print(f"      Spoof score: {assessment['spoof_score']:.4f} "
+    print(f"      Raw spoof evidence: {assessment['raw_spoof_evidence']:.4f}")
+    print(f"      Calibrated spoof score: {assessment['spoof_score']:.4f} "
           f"({assessment['spoof_label']})")
+    print(f"      Calibration: {assessment['calibration']}")
 
     print("\n[5/5] Running real Faster-Whisper language detection and prosody...")
     from app.services.prosody_analyzer import analyze_prosody
     from app.services.transcription_service import transcribe_detailed
     transcription = transcribe_detailed(audio_path)
     prosody = analyze_prosody(audio_path)
+    print(f"      Model requested/loaded: {transcription.get('model_size')}")
     print(f"      Transcript: {transcription['transcript'] or '(no speech detected)'}")
-    print(f"      Language: {transcription['detected_language']} "
+    print(f"      Detected language: {transcription['detected_language']} "
           f"({transcription['language_probability']})")
+    print(f"      Selected language: {transcription.get('selected_language')} "
+          f"via {transcription.get('language_detection_method')}")
     print(f"      Prosody: available={prosody['available']} confidence={prosody['confidence']}")
 
     print("\n" + "=" * 60)

@@ -12,6 +12,8 @@ environment (no heavy AI deps installed).
 import math
 
 from app.config import (
+    SPOOF_CALIBRATION_TEMPERATURE,
+    SPOOF_CALIBRATION_VERSION,
     SPOOF_LIKELY_AI_MAX,
     SPOOF_PROBABLY_GENUINE_MAX,
     SPOOF_SUSPICIOUS_MAX,
@@ -54,6 +56,28 @@ def spoof_probability_from_logits(logit_spoof: float, logit_bonafide: float) -> 
     exp_spoof = math.exp(logit_spoof - m)
     exp_bonafide = math.exp(logit_bonafide - m)
     return exp_spoof / (exp_spoof + exp_bonafide)
+
+
+def calibrated_spoof_score_from_logits(logit_spoof: float, logit_bonafide: float) -> float:
+    """Return conservative UI-facing spoof evidence from AASIST logits.
+
+    AASIST's bundled evaluation writes the raw bonafide logit for ranking;
+    it does not validate softmax values as real-world probabilities for live
+    microphone audio. Temperature scaling preserves class direction, rank,
+    and neutral equal evidence while reducing unvalidated confidence. This is
+    calibrated evidence, not a scientifically validated probability.
+    """
+    temperature = float(SPOOF_CALIBRATION_TEMPERATURE)
+    if temperature <= 0:
+        raise ValueError("SPOOF_CALIBRATION_TEMPERATURE must be positive")
+    return spoof_probability_from_logits(
+        float(logit_spoof) / temperature,
+        float(logit_bonafide) / temperature,
+    )
+
+
+def spoof_calibration_metadata() -> dict:
+    return {"method": SPOOF_CALIBRATION_VERSION, "temperature": float(SPOOF_CALIBRATION_TEMPERATURE)}
 
 
 def spoof_label_from_score(score: float) -> str:
