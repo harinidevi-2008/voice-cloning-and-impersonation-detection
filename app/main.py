@@ -64,7 +64,7 @@ async def root():
     return {
         "service": "voice-integrity-security-layer-backend",
         "status": "ok",
-        "endpoints": ["/enroll", "/enroll/speakers", "/users", "/analyze", "/docs"],
+        "endpoints": ["/enroll", "/enroll/speakers", "/users", "/analyze", "/analyze/intermediate", "/docs"],
         # Not part of the Section 3 interface contract (that's /enroll,
         # /users, /analyze only) — added so the dashboard can show the
         # ACTUAL configured backend instead of a hardcoded guess. See

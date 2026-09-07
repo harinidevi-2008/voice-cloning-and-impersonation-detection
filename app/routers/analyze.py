@@ -1,7 +1,9 @@
 import logging
 import os
 import time
+import tempfile
 from typing import Optional
+import soundfile as sf
 from fastapi import APIRouter, Form, File, UploadFile, HTTPException, Response
 
 from app.schemas import AnalyzeResponse
@@ -22,7 +24,7 @@ from app.services.ai_models.exceptions import (
     AudioTooShortError,
     SpeakerEmbeddingMissingError,
 )
-from app.config import RETAIN_RAW_AUDIO
+from app.config import LIVE_ANALYSIS_WINDOW_SECONDS, RETAIN_RAW_AUDIO
 from app.services.ai_models.embedding_store import has_valid_embedding, init_db as init_embedding_db
 from app.config import AI_BACKEND, URGENCY_RISK_MAP, KNOWN_CONTACT_SIMILARITY_THRESHOLD
 
@@ -30,14 +32,38 @@ router = APIRouter()
 logger = logging.getLogger("visl.analyze")
 
 
-def _discard_analysis_audio(path: Optional[str]) -> None:
+def _discard_analysis_audio(path: Optional[str], *, force: bool = False) -> None:
     """Remove transient normalized call audio unless explicitly retained."""
-    if RETAIN_RAW_AUDIO or not path or not os.path.exists(path):
+    # A live-window file is always ephemeral, even when a deployment has
+    # deliberately opted to retain authoritative final-call recordings.
+    live_window = bool(path and os.path.basename(path).startswith("live_window_"))
+    if (RETAIN_RAW_AUDIO and not live_window and not force) or not path or not os.path.exists(path):
         return
     try:
         os.remove(path)
     except OSError:
         logger.exception("Failed to remove transient analysis audio %s", path)
+
+
+def _recent_live_window(audio_path: str) -> str:
+    """Return a bounded recent WAV window for temporary live inference.
+
+    The upload has already been normalized to 16 kHz mono PCM. Keeping the
+    most recent 12 seconds gives each unchanged model enough speech context,
+    including AASIST's fixed ~4-second input, without making each later live
+    pass slower than the last. This file is deleted by the caller exactly as
+    any other transient analysis audio is.
+    """
+    samples, sample_rate = sf.read(audio_path, dtype="float32", always_2d=False)
+    max_samples = int(sample_rate * LIVE_ANALYSIS_WINDOW_SECONDS)
+    if max_samples <= 0:
+        max_samples = samples.shape[0]
+    with tempfile.NamedTemporaryFile(
+        prefix="live_window_", suffix=".wav", dir=os.path.dirname(audio_path), delete=False
+    ) as temporary:
+        window_path = temporary.name
+    sf.write(window_path, samples[-max_samples:], sample_rate, subtype="PCM_16")
+    return window_path
 
 
 def _stage_error(stage: str, exc: Exception, status_code: int = 500) -> HTTPException:
@@ -60,8 +86,7 @@ def _parse_bool(value: str, field_name: str) -> bool:
     )
 
 
-@router.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_call(
+async def _run_analysis(
     response: Response,
     audio_file: UploadFile = File(..., description="Audio sample from the call/transaction"),
     claimed_user_id: Optional[int] = Form(
@@ -82,6 +107,8 @@ async def analyze_call(
         description="true/false. Omit to auto-derive from speaker similarity vs. "
                     "KNOWN_CONTACT_SIMILARITY_THRESHOLD (requires claimed_user_id).",
     ),
+    *,
+    persist: bool,
 ):
     """
     Runs the full pipeline for one call/transaction:
@@ -165,6 +192,16 @@ async def analyze_call(
                 os.remove(raw_path)
             except OSError:
                 logger.exception("Failed to remove pre-conversion upload %s", raw_path)
+
+    if not persist:
+        try:
+            live_window_path = _recent_live_window(saved_path)
+        except Exception as exc:  # noqa: BLE001 - normalized input should be readable
+            _discard_analysis_audio(saved_path, force=True)
+            raise _stage_error("Live audio window preparation", exc) from exc
+        if live_window_path != saved_path:
+            _discard_analysis_audio(saved_path, force=True)
+            saved_path = live_window_path
 
     # --- Member 1 interface calls (mock or real, per AI_BACKEND) ---
     ai_start = time.perf_counter()
@@ -281,24 +318,28 @@ async def analyze_call(
         urgency=final_urgency,
     )
 
-    # --- persist to call_logs (Task 6) ---
-    try:
-        call_id = analysis_db.save_analysis(
-            transcript=transcript,
-            spoof_score=spoof_score,
-            similarity=speaker_similarity,
-            amount=detected_amount,
-            urgency=final_urgency,
-            risk=verdict,
-            speaker_name=(claimed_user["name"] if claimed_user else None),
-            speaker_user_id=claimed_user_id,
-            preventive_actions=preventive_actions,
-            currency=primary_amount["currency"] if primary_amount else None,
-            display_amount=primary_amount["display_amount"] if primary_amount else None,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _discard_analysis_audio(saved_path)
-        raise _stage_error("Database/history persistence", exc) from exc
+    # Intermediate analysis deliberately reuses every model and risk signal
+    # above, but never creates a call-history record. Only a stopped call's
+    # complete recording is authoritative and persisted.
+    call_id = None
+    if persist:
+        try:
+            call_id = analysis_db.save_analysis(
+                transcript=transcript,
+                spoof_score=spoof_score,
+                similarity=speaker_similarity,
+                amount=detected_amount,
+                urgency=final_urgency,
+                risk=verdict,
+                speaker_name=(claimed_user["name"] if claimed_user else None),
+                speaker_user_id=claimed_user_id,
+                preventive_actions=preventive_actions,
+                currency=primary_amount["currency"] if primary_amount else None,
+                display_amount=primary_amount["display_amount"] if primary_amount else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _discard_analysis_audio(saved_path)
+            raise _stage_error("Database/history persistence", exc) from exc
 
     total_elapsed_ms = (time.perf_counter() - pipeline_start) * 1000
     response.headers["X-Processing-Time-Ms"] = f"{total_elapsed_ms:.1f}"
@@ -348,3 +389,30 @@ async def analyze_call(
     )
     _discard_analysis_audio(saved_path)
     return result
+
+
+@router.post("/analyze", response_model=AnalyzeResponse)
+async def analyze_call(
+    response: Response,
+    audio_file: UploadFile = File(..., description="Audio sample from the call/transaction"),
+    claimed_user_id: Optional[int] = Form(None, description="Enrolled user_id the caller claims to be, or omit/null if unknown"),
+    transaction_value: Optional[float] = Form(None, ge=0),
+    urgency: Optional[str] = Form(None),
+    caller_known: Optional[str] = Form(None),
+):
+    """Analyze a complete call and persist its one authoritative result."""
+    return await _run_analysis(
+        response, audio_file, claimed_user_id, transaction_value, urgency, caller_known, persist=True
+    )
+
+
+@router.post("/analyze/intermediate", response_model=AnalyzeResponse)
+async def analyze_intermediate_call(
+    response: Response,
+    audio_file: UploadFile = File(..., description="Accumulated in-progress call audio"),
+    claimed_user_id: Optional[int] = Form(None, description="Optional enrolled caller identity"),
+):
+    """Analyze in-progress audio without retaining audio, transcripts, or history."""
+    return await _run_analysis(
+        response, audio_file, claimed_user_id, None, None, None, persist=False
+    )

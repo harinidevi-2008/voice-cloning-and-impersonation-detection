@@ -118,6 +118,37 @@ def test_analyze_actions_match_persisted_recent_analysis():
     assert saved["preventive_actions"] == analysis["preventive_actions"]
 
 
+def test_intermediate_analysis_reuses_pipeline_without_persisting_history():
+    before_ids = {item["call_id"] for item in analysis_db.list_recent_analyses(limit=1000)}
+    files_before = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
+    files = {"audio_file": ("clone_live.webm", io.BytesIO(_fake_wav_bytes()), "audio/webm")}
+
+    response = client.post("/analyze/intermediate", files=files)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["call_id"] is None
+    assert {"spoof_score", "transcript", "impersonation_risk", "verdict", "preventive_actions"}.issubset(body)
+    after_ids = {item["call_id"] for item in analysis_db.list_recent_analyses(limit=1000)}
+    assert after_ids == before_ids
+    files_after = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
+    assert files_after == files_before
+
+
+def test_intermediate_audio_is_deleted_even_when_final_audio_retention_is_enabled(monkeypatch):
+    import app.routers.analyze as analyze_router
+
+    monkeypatch.setattr(analyze_router, "RETAIN_RAW_AUDIO", True)
+    files_before = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
+    files = {"audio_file": ("clone_private_live.webm", io.BytesIO(_fake_wav_bytes()), "audio/webm")}
+
+    response = client.post("/analyze/intermediate", files=files)
+
+    assert response.status_code == 200
+    files_after = set(os.listdir(AUDIO_UPLOAD_DIR)) if os.path.isdir(AUDIO_UPLOAD_DIR) else set()
+    assert files_after == files_before
+
+
 def test_analyze_with_unknown_claimed_user_returns_404():
     files = {"audio_file": ("genuine_carol.wav", io.BytesIO(_fake_wav_bytes()), "audio/wav")}
     data = {

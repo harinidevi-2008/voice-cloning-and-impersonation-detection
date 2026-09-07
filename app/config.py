@@ -132,6 +132,14 @@ WHISPER_LANGUAGE_CONFIDENCE_THRESHOLD = float(
 WHISPER_LANGUAGE_SHORT_SPEECH_SECONDS = float(
     os.environ.get("VISL_WHISPER_LANGUAGE_SHORT_SPEECH_SECONDS", "1.0")
 )
+# Intermediate microphone analysis uses recent, real speech rather than an
+# ever-growing recording. Twelve seconds comfortably exceeds AASIST/ECAPA's
+# two-second reliability floor and AASIST's ~4-second evaluation window,
+# while bounding Whisper latency. The stopped-call /analyze path always uses
+# the complete recording.
+LIVE_ANALYSIS_WINDOW_SECONDS = float(
+    os.environ.get("VISL_LIVE_ANALYSIS_WINDOW_SECONDS", "12.0")
+)
 
 # Optional static FX normalization for demo risk thresholds. Values are INR
 # per unit of currency and must be supplied deliberately by the deployment,
@@ -203,4 +211,14 @@ DEVELOPMENT_RESET_ON_STARTUP = os.environ.get(
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-CORS_ALLOW_ORIGINS = ["*"]  # hackathon-friendly; tighten before any real deployment
+# The continuous recorder posts browser MediaRecorder blobs directly to the
+# local FastAPI service. Keep that bridge restricted to Streamlit's local
+# development origins; deployments must explicitly supply their dashboard URL.
+CORS_ALLOW_ORIGINS = [
+    item.strip()
+    for item in os.environ.get(
+        "VISL_CORS_ALLOW_ORIGINS",
+        "http://localhost:8501,http://127.0.0.1:8501",
+    ).split(",")
+    if item.strip()
+]

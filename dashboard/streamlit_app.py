@@ -2,9 +2,10 @@
 Voice Integrity Security Layer — Streamlit Dashboard (Member 2)
 
 A thin HTTP client over the FastAPI backend built in member2_backend/app/.
-This file talks to the backend ONLY through /enroll, /users, and /analyze —
-it never imports backend code directly, so backend and dashboard can be
-demoed, deployed, or swapped independently.
+This file talks to the backend only through its HTTP API (including the
+non-persistent /analyze/intermediate live-analysis route); it never imports
+backend code directly, so backend and dashboard can be demoed, deployed, or
+swapped independently.
 
 Two screens (as tabs, per the "no unnecessary pages" instruction):
   1. Speaker Enrollment
@@ -26,8 +27,11 @@ Run with:
 import os
 import time
 import html
+import json
+import uuid
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_mic_recorder import mic_recorder
 
 # ---------------------------------------------------------------------------
@@ -199,6 +203,102 @@ def analyze_call(audio_bytes: bytes, filename: str, content_type: str, claimed_u
         return None, "Cannot reach backend (is uvicorn running?)"
     except Exception as exc:  # noqa: BLE001
         return None, f"Unexpected error during analysis: {exc}"
+
+
+def render_continuous_call_recorder(claimed_user_id):
+    """Render the isolated browser-side MediaRecorder live-analysis bridge.
+
+    ``streamlit_mic_recorder`` intentionally returns only after Stop, so it
+    remains in use for enrollment and the non-live recording widget. This
+    small iframe owns a real MediaRecorder session: it keeps all chunks for
+    one final upload and sends accumulated WebM audio to the non-persistent
+    endpoint at a best-effort five-second cadence. The browser enforces one
+    in-flight intermediate request; a slow pass simply analyzes the newest
+    accumulated audio next, never queues or drops the final recording.
+    """
+    # Kept in Streamlit state for rerun isolation; the browser also creates a
+    # fresh UUID at each Start so stale callbacks cannot label a new call.
+    session_id = st.session_state.setdefault("live_recording_component_id", uuid.uuid4().hex)
+    config = json.dumps({
+        "apiBase": api_base_url().rstrip("/"),
+        "claimedUserId": claimed_user_id,
+        "sessionId": session_id,
+    }).replace("</", "<\\/")
+    recorder_html = """
+<style>
+* { box-sizing:border-box; } body { font-family:Inter,ui-sans-serif,system-ui,sans-serif; margin:0; color:#111827; background:#fff; }
+#live { border:1px solid #E5E7EB; border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(17,17,17,.08); }
+#controls { display:flex; gap:9px; align-items:center; flex-wrap:wrap; margin-bottom:12px; } button { border:0; border-radius:9px; padding:10px 14px; font-weight:700; cursor:pointer; }
+#start { background:#111827; color:#fff; } #stop { background:#DC2626; color:#fff; } button:disabled { opacity:.5; cursor:not-allowed; }
+#state { color:#6B7280; font-size:13px; } #hint { color:#6B7280; font-size:12px; } #result { display:none; margin-top:16px; }
+.live-heading { display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #E5E7EB; padding-bottom:12px; margin-bottom:14px; }
+.live-title { font-size:16px; font-weight:800; letter-spacing:.02em; } .live-dot { color:#DC2626; font-weight:800; } .timing { color:#6B7280; font-size:12px; text-align:right; line-height:1.55; }
+.risk-hero { color:#fff; border-radius:15px; padding:18px; background:linear-gradient(135deg,#6B7280,#111827); margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; }
+.risk-label { font-size:12px; font-weight:800; letter-spacing:.09em; } .risk-verdict { font-size:27px; font-weight:900; margin-top:4px; } .risk-score { font-size:35px; font-weight:900; }
+.meter { height:9px; background:rgba(255,255,255,.28); border-radius:999px; overflow:hidden; margin-top:12px; } .meter > div { height:100%; border-radius:999px; background:#fff; transition:width .35s ease; }
+.cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; } .card { background:#F9FAFB; border:1px solid #E5E7EB; border-radius:13px; padding:12px; min-height:92px; }
+.card-title { color:#6B7280; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; } .card-value { font-size:17px; font-weight:800; margin-top:6px; } .card-detail { color:#6B7280; font-size:12px; margin-top:3px; }
+.transcript { background:#F3F4F6; border-radius:12px; padding:12px; margin-top:11px; font-size:13px; line-height:1.45; } .section-title { font-weight:800; margin:14px 0 7px; }
+.component { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:12px; } .component span { min-width:112px; } .component-track { flex:1; height:7px; background:#E5E7EB; border-radius:99px; overflow:hidden; } .component-fill { height:100%; border-radius:99px; }
+#trend { margin-top:14px; } #trendRows { display:flex; gap:7px; flex-wrap:wrap; } .trend-row { border-radius:999px; padding:5px 9px; font-size:12px; font-weight:700; background:#F3F4F6; }
+#actions { margin:8px 0 0; padding-left:18px; font-size:12px; } #final { margin-top:14px; border-radius:10px; padding:10px; background:#ECFDF5; color:#065F46; font-weight:800; display:none; }
+@media(max-width:620px) { .cards { grid-template-columns:repeat(2,minmax(0,1fr)); } .risk-hero { display:block; } .risk-score { margin-top:8px; } }
+</style>
+<div id="live">
+  <div id="controls"><button id="start">Start continuous recording</button><button id="stop" disabled>Stop &amp; run final analysis</button><span id="state">Recording is idle.</span></div>
+  <div id="hint">Audio windows are captured about every 5 seconds. Results appear when the existing AI analysis completes; the complete recording receives one final authoritative analysis.</div>
+  <div id="result"><div class="live-heading"><div><div class="live-title">LIVE VOICE INTEGRITY ANALYSIS</div><div class="live-dot">● LIVE ANALYSIS</div></div><div class="timing" id="timing"></div></div><div id="hero"></div><div class="cards" id="cards"></div><div class="section-title">Live conversation</div><div class="transcript" id="transcript"></div><div class="section-title">Component score detail</div><div id="components"></div><div id="trend"><b>Live risk trend</b><div id="trendRows"></div></div><ul id="actions"></ul><div id="final"></div></div>
+</div>
+<script>
+const config = __CONFIG__;
+const startButton = document.getElementById('start'), stopButton = document.getElementById('stop');
+const state = document.getElementById('state'), resultBox = document.getElementById('result'), hero = document.getElementById('hero');
+const timing = document.getElementById('timing'), cards = document.getElementById('cards'), transcriptBox = document.getElementById('transcript');
+const componentsBox = document.getElementById('components'), trendRows = document.getElementById('trendRows'), actions = document.getElementById('actions'), finalLine = document.getElementById('final');
+let recorder, stream, chunks = [], timer, inFlight = false, stopping = false, startedAt = 0, history = [], queuedWindow = null, recordingSessionId = '';
+function audioType() { for (const type of ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus']) if (!window.MediaRecorder || !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(type)) return type; return ''; }
+function elapsed() { return (performance.now() - startedAt) / 1000; }
+function blob() { return new Blob(chunks, {type: recorder && recorder.mimeType || 'audio/webm'}); }
+function setState(text) { state.textContent = text; }
+function riskColor(score) { if (score >= .85) return '#DC2626'; if (score >= .70) return '#F97316'; if (score >= .40) return '#D97706'; return '#059669'; }
+function card(title, value, detail) { const item=document.createElement('div'); item.className='card'; const a=document.createElement('div'); a.className='card-title'; a.textContent=title; const b=document.createElement('div'); b.className='card-value'; b.textContent=value; const c=document.createElement('div'); c.className='card-detail'; c.textContent=detail || ''; item.append(a,b,c); cards.appendChild(item); }
+function component(label, score, color) { const row=document.createElement('div'); row.className='component'; const labelNode=document.createElement('span'); labelNode.textContent=label; const track=document.createElement('div'); track.className='component-track'; const fill=document.createElement('div'); fill.className='component-fill'; fill.style.width=`${Math.max(0,Math.min(1,Number(score)||0))*100}%`; fill.style.background=color; track.appendChild(fill); const value=document.createElement('b'); value.textContent=`${Math.round((Number(score)||0)*100)}%`; row.append(labelNode,track,value); componentsBox.appendChild(row); }
+function displayResult(data, seconds, final, latency) {
+  resultBox.style.display='block'; cards.innerHTML=''; componentsBox.innerHTML=''; actions.innerHTML='';
+  const risk=Number(data.impersonation_risk||0), color=riskColor(risk), verdict=data.verdict||'UNKNOWN', language=data.selected_language||data.detected_language||'Not detected';
+  timing.textContent=`Audio captured: ${elapsed().toFixed(1)} sec | Latest analyzed: ${seconds.toFixed(1)} sec | Analysis latency: ${latency.toFixed(1)} sec`;
+  hero.innerHTML=`<div class="risk-hero" style="background:linear-gradient(135deg,${color},#111827)"><div><div class="risk-label">OVERALL RISK</div><div class="risk-verdict"></div><div class="meter"><div></div></div></div><div class="risk-score"></div></div>`;
+  hero.querySelector('.risk-verdict').textContent=verdict; hero.querySelector('.risk-score').textContent=`${Math.round(risk*100)}%`; hero.querySelector('.meter > div').style.width=`${risk*100}%`;
+  const spoof=Number(data.spoof_score||0), similarity=data.speaker_similarity;
+  card('AI voice authenticity', data.spoof_label||data.spoof_category||'Available', `Spoof evidence: ${Math.round(spoof*100)}%`);
+  card('Speaker verification', data.speaker_status||'No claimed identity', similarity == null ? 'Similarity: N/A' : `Similarity: ${similarity.toFixed(2)}`);
+  card('Transaction', data.display_amount||'Not detected', data.detected_currency ? `Currency: ${data.detected_currency}` : 'Currency: not detected');
+  card('Urgency', String(data.detected_urgency||'low').toUpperCase(), data.urgency_confidence == null ? 'Confidence: N/A' : `Confidence: ${Math.round(data.urgency_confidence*100)}%`);
+  card('Language', language, data.language_probability == null ? 'Detection: verified/unknown' : `Confidence: ${Math.round(data.language_probability*100)}%`);
+  card('Recommended action', data.recommended_action||'Review safeguards', final ? 'Final authoritative result' : 'Live interim result');
+  transcriptBox.textContent=data.transcript||'No speech transcript was returned for this window.';
+  component('AI spoof signal', spoof, spoof > .65 ? '#DC2626' : '#059669'); component('Context risk', data.context_risk, riskColor(Number(data.context_risk||0))); component('Overall risk', risk, color);
+  if (data.prosody_risk != null) component('Prosody signal', data.prosody_risk, '#7C3AED');
+  if (!final) { history.push({seconds,risk,verdict}); trendRows.innerHTML=''; history.forEach(row=>{const line=document.createElement('span'); line.className='trend-row'; line.style.color=riskColor(row.risk); line.textContent=`${row.seconds.toFixed(0)} sec · ${Math.round(row.risk*100)}% · ${row.verdict}`; trendRows.appendChild(line);}); }
+  (data.preventive_actions||[]).slice(0,5).forEach(action=>{const item=document.createElement('li'); item.textContent=action; actions.appendChild(item);});
+  finalLine.style.display=final?'block':'none'; if(final) finalLine.textContent=`FINAL ANALYSIS — ${verdict} · ${data.recommended_action||'Follow the recommended safeguards.'}`;
+}
+async function send(kind, window) {
+  const seconds = window ? window.seconds : elapsed(); const audio = window ? window.audio : blob(); if (!audio.size) return;
+  const form = new FormData(); form.append('audio_file', audio, `live_${recordingSessionId}.webm`); if (config.claimedUserId !== null) form.append('claimed_user_id', String(config.claimedUserId));
+  const began = performance.now();
+  try { const response = await fetch(`${config.apiBase}/analyze${kind === 'final' ? '' : '/intermediate'}`, {method:'POST', body:form}); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Analysis unavailable');
+    const latency=(performance.now()-began)/1000; if (!stopping || kind === 'final') { displayResult(data, seconds, kind === 'final', latency); setState(kind === 'final' ? `Final analysis completed in ${latency.toFixed(1)} sec.` : `Live result received — analysis completed in ${latency.toFixed(1)} sec.`); }
+  } catch (error) { if (kind === 'final') setState('Final analysis failed. Please use the normal upload workflow.'); else setState('Live analysis temporarily unavailable — recording continues.'); }
+}
+function captureWindow() { if (stopping || elapsed() < 5 || !chunks.length) return; queuedWindow={audio:blob(),seconds:elapsed()}; setState(`Audio window captured at ${queuedWindow.seconds.toFixed(1)} sec. ${inFlight ? 'Current analysis is still running; newest window is queued.' : 'Starting live analysis.'}`); dispatchLatestWindow(); }
+async function dispatchLatestWindow() { if (stopping || inFlight || !queuedWindow) return; const window=queuedWindow; queuedWindow=null; inFlight=true; await send('intermediate',window); inFlight=false; if (queuedWindow) dispatchLatestWindow(); }
+function finishWhenIdle() { if (inFlight) { setTimeout(finishWhenIdle, 250); return; } queuedWindow=null; setState('Running one authoritative final analysis on the complete recording…'); send('final'); }
+startButton.onclick = async () => { try { stream = await navigator.mediaDevices.getUserMedia({audio:true}); const type=audioType(); recorder = type ? new MediaRecorder(stream,{mimeType:type}) : new MediaRecorder(stream); chunks=[]; history=[]; queuedWindow=null; stopping=false; recordingSessionId=(crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random()}`); startedAt=performance.now(); recorder.ondataavailable=e=>{ if(e.data && e.data.size) chunks.push(e.data); }; recorder.onstop=()=>{ stream.getTracks().forEach(track=>track.stop()); finishWhenIdle(); }; recorder.start(1000); timer=setInterval(captureWindow,5000); startButton.disabled=true; stopButton.disabled=false; finalLine.textContent=''; finalLine.style.display='none'; setState('Recording… Collecting audio — first analysis at approximately 5 seconds.'); } catch(error) { setState('Microphone permission was unavailable.'); } };
+stopButton.onclick = () => { if (!recorder || recorder.state === 'inactive') return; stopping=true; clearInterval(timer); stopButton.disabled=true; setState('Stopping recorder and collecting final audio…'); recorder.stop(); };
+</script>
+"""
+    components.html(recorder_html.replace("__CONFIG__", config), height=760, scrolling=False)
 
 
 def _extract_error(resp: requests.Response) -> str:
@@ -685,33 +785,37 @@ with tab_analyze:
         disabled=not bool(speakers),
     )
 
-    st.markdown("**Call audio sample**")
-    analyze_audio = audio_input_widget("analyze")
+    claimed_user_id = None if claimed_choice == UNKNOWN_OPTION else int(claimed_choice.split(" -- ")[0])
+    analysis_input_mode = st.radio(
+        "Call input method", ["Upload File", "Continuous Microphone"], horizontal=True,
+        key="analyze_input_mode",
+    )
 
-    manual_submit = st.button("Analyze Call", use_container_width=True, key="analyze_submit_btn")
-
-    if manual_submit:
-        if analyze_audio is None:
-            st.error("Please upload or record the call's audio sample.")
-        else:
-            audio_bytes, filename, content_type = analyze_audio
-            claimed_user_id = None
-            if claimed_choice != UNKNOWN_OPTION:
-                claimed_user_id = int(claimed_choice.split(" -- ")[0])
-
-            with st.spinner("Analyzing call -- transcribing, detecting spoofing, checking identity..."):
-                result, error = analyze_call(
-                    audio_bytes=audio_bytes,
-                    filename=filename,
-                    content_type=content_type,
-                    claimed_user_id=claimed_user_id,
-                )
-
-            if error:
-                st.error("Analysis failed")
-                st.caption(f"Reason: {error}")
+    if analysis_input_mode == "Continuous Microphone":
+        st.caption("Near-real-time, chunk-based analysis. Intermediate results are temporary; only the final complete recording is saved to history.")
+        render_continuous_call_recorder(claimed_user_id)
+    else:
+        uploaded_call = st.file_uploader(
+            "Upload an audio file", type=ALLOWED_AUDIO_TYPES, key="analyze_upload_uploader"
+        )
+        manual_submit = st.button("Analyze Call", use_container_width=True, key="analyze_submit_btn")
+        if manual_submit:
+            if uploaded_call is None:
+                st.error("Please upload the call's audio sample.")
             else:
-                st.session_state["last_analysis_result"] = result
+                with st.spinner("Analyzing call -- transcribing, detecting spoofing, checking identity..."):
+                    result, error = analyze_call(
+                        audio_bytes=uploaded_call.getvalue(),
+                        filename=uploaded_call.name,
+                        content_type=uploaded_call.type or "audio/wav",
+                        claimed_user_id=claimed_user_id,
+                    )
+
+                if error:
+                    st.error("Analysis failed")
+                    st.caption(f"Reason: {error}")
+                else:
+                    st.session_state["last_analysis_result"] = result
 
     # --- Results view (persists across reruns) ---
     result = st.session_state.get("last_analysis_result")
